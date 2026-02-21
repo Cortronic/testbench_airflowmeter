@@ -3,6 +3,7 @@
 #include <driver/ledc.h>
 #include <driver/dac.h>
 #include <Wire.h>
+#include <Preferences.h>
 #include <AiEsp32RotaryEncoder.h>
 #include <AiEsp32RotaryEncoderNumberSelector.h>
 #include <SensirionCore.h>
@@ -14,11 +15,6 @@
 #include <Smoothed.h>
 #include <PID_v1.h>
 #include "main.h"
-
-#define ROTARY_ENCODER_A_PIN 2
-#define ROTARY_ENCODER_B_PIN 4
-#define ROTARY_ENCODER_BUTTON_PIN 15
-#define ROTARY_ENCODER_STEPS 4
 
 // Pin definitions
 const int FAN_ON_PIN  = 14;
@@ -34,6 +30,12 @@ const int I2C_ADDRESS_DISPLAY = 0x3C;
 const int I2C_ADDRESS_BME280  = 0x76;
 const int I2C_ADDRESS_SDP810  = 0x25;
 
+// Rotary encoder
+const int ROTARY_ENCODER_A_PIN = 18;
+const int ROTARY_ENCODER_B_PIN = 19;
+const int ROTARY_ENCODER_BUTTON_PIN = 5;
+const int ROTARY_ENCODER_STEPS = 4;
+
 // PWM settings
 const int PWM_FAN_CHAN = LEDC_CHANNEL_0;
 const int PWM_FREQ = 25000;    // 25 kHz frequency for computer fans
@@ -42,11 +44,11 @@ const int PWM_RESOLUTION = 10; // 10-bit resolution (0-1023)
 // Venturi Constants
 const float D = 0.116;      // Inlet diameter (m)
 const float d = 0.087;      // Throat diameter (m)
-const float Cd = 0.975;     // Discharge coefficient (adjust after calibration)    
+float Cd = 0.975;           // Discharge coefficient (adjust after calibration)    
 const float beta = d / D;
 const float Cb = 1 - pow(beta, 4);
 const float A1 = (PI * pow(D, 2)) / 4.0; // Inlet area (m3)
-const float A2 = (PI * pow(d, 2)) / 4.0; // Throat aArea (m3)
+const float A2 = (PI * pow(d, 2)) / 4.0; // Throat area (m3)
 
 //paramaters for button
 const unsigned long shortPressAfterMiliseconds = 50;   // how long short press shoud be.
@@ -57,10 +59,12 @@ AiEsp32RotaryEncoder *rotaryEncoder = new AiEsp32RotaryEncoder(ROTARY_ENCODER_A_
   ROTARY_ENCODER_BUTTON_PIN, -1, ROTARY_ENCODER_STEPS, false);
 AiEsp32RotaryEncoderNumberSelector numberSelector = AiEsp32RotaryEncoderNumberSelector();
 
+Preferences preferences;
+
 Smoothed<float> flow;
 Smoothed<float> flowPressure;
 Smoothed<float> calibration;
-Smoothed<float> pressureAmbient;
+Smoothed<float> pressureAbsolute;
 Smoothed<float> temperatureAmbient;
 Smoothed<float> humidityAmbient;
 
@@ -81,7 +85,7 @@ Adafruit_BME280  bme280;     // I2C
 hw_timer_t *timer0 = nullptr;
 volatile bool ms10_passed = false;
 
-ModeType modeType = MEASURE_MODE;
+ModeType modeType = MT_SPEED;
 bool direction = false; // false for return
 
 // Define Variables we'll be connecting to
@@ -91,14 +95,10 @@ double pidSetpoint, pidInput, pidOutput;
 double Kp=6, Ki=3, Kd=0;
 PID pid(&pidInput, &pidOutput, &pidSetpoint, Kp, Ki, Kd, REVERSE);
 
-float offsetFlowPressure;
-float compensationFactorRA = 0.0;
-float compensationFactorRB = 0.0;
-float compensationFactorSA = 0.0;
-float compensationFactorSB = 0.0;
-
 const float flowFactor = 620.21;
 float Cf = Cd * flowFactor;
+float offsetFlowPressure;
+float rho = 1.2; // densitity of air at 1013,25 hPa, 20 C, and 60 %Rh (Kg/m3)
 
 static void  initDisplay(void);
 static void  displayMeasurements();
@@ -108,6 +108,8 @@ static void  initBME280();
 static void  initSDP(SensirionI2CSdp&, TwoWire&);
 static float calculateFlowCompensated(float dP);
 static void  drawString(int16_t x, int16_t y, const String &text);
+static float getFlow(float dP);
+static void  setRho(float tempC, float absPressurePa, float humidityPct);
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -146,17 +148,43 @@ void setupTimer0() {
 }
 //////////////////////////////////////////////////////////////////////////
 
+float getFloat(const char* key, float value = NAN) {
+  float f;
+  preferences.begin("testbench", false);
+  f = preferences.getFloat(key, value);
+  preferences.end();
+  return f == NAN ? 0.0 : f;
+}
+//////////////////////////////////////////////////////////////////////////
+
+void saveFloat(const char* key, float value) {
+  preferences.begin("testbench", false);
+  preferences.putFloat(key, value);
+  preferences.end();
+}
+//////////////////////////////////////////////////////////////////////////
+
+void initCf() {
+  preferences.begin("testbench", true);
+  Cd = preferences.getFloat("Cd", 0.0);
+  if (Cd >= 0.9 && Cd <= 1.0) {
+    Cf = flowFactor * Cd;
+  }
+  preferences.end();
+}
+//////////////////////////////////////////////////////////////////////////
+
 void setupRotaryEncoder() {
   rotaryEncoder->begin();
   rotaryEncoder->setup(&readEncoder_ISR, &readButton_ISR);
   numberSelector.attachEncoder(rotaryEncoder);
 
   // numberSelector.setRange parameters:
-  float minValue = 0;          // set minimum value for example -12.0
-  float maxValue = 1023;       // set maxinum value for example 12.0
-  float step = 1;              // set step increment, default 1, can be smaller steps like 0.5 or 10
+  float minValue = 0.0;        // set minimum value for example -12.0
+  float maxValue = 100.0;      // set maxinum value for example 12.0
+  float step = 0.1;            // set step increment, default 1, can be smaller steps like 0.5 or 10
   bool cycleValues = false;    // set true only if you want going to miminum value after maximum 
-  unsigned int decimals = 0;   // set precision - how many decimal places you want, default is 0
+  unsigned int decimals = 1;   // set precision - how many decimal places you want, default is 0
   numberSelector.setRange(minValue, maxValue,  step, cycleValues, decimals);
   numberSelector.setValue(0);  // sets initial value
 }
@@ -178,9 +206,17 @@ void setFanSpeed(uint32_t speed) {
 //////////////////////////////////////////////////////////////////////////
 
 void setup() {
+  
+  // prefent fan from starting up
+  pinMode(FAN_ON_PIN, OUTPUT);
+  digitalWrite(FAN_ON_PIN, LOW);
+
   Serial.begin(115200);
 
   Serial.println("\ntestbench_airflowmeter is starting up...");
+
+  // set Cf
+  initCf();
 
   // setup RotaryEncoder
   setupRotaryEncoder();
@@ -207,7 +243,7 @@ void setup() {
   initBME280();
   delay(500);
   Serial.println("Setup SDP810 Flow");
-  initSDP(sdpFlow, I2C_A);
+  initSDP(sdpFlow, I2C_B);
   delay(500);
   
 
@@ -215,7 +251,7 @@ void setup() {
   flow.begin(SMOOTHED_AVERAGE, 50);
   flowPressure.begin(SMOOTHED_AVERAGE, 100);
   calibration.begin(SMOOTHED_AVERAGE, 200);
-  pressureAmbient.begin(SMOOTHED_AVERAGE, 40);
+  pressureAbsolute.begin(SMOOTHED_AVERAGE, 40);
   humidityAmbient.begin(SMOOTHED_AVERAGE, 40);
   temperatureAmbient.begin(SMOOTHED_AVERAGE, 40);
   delay(500);
@@ -259,21 +295,49 @@ void setup() {
 //////////////////////////////////////////////////////////////////////////
 
 void initNextMode(ModeType type) {
+  modeType = type;
 
   switch (type) {
-    case SELECT_MODE:
-      modeType = type;
+    
+    case MT_SELECT:
       break;
 
-    case MEASURE_MODE:
-      modeType = type;
-      break; 
+    case MT_SPEED:
+      numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
+      numberSelector.setValue(10.0);
+      setFanSpeed(102); // 10%
+      break;
 
-    case CALIBRATE_FLOW_MODE:
-      modeType = type;
-      numberSelector.setRange(0.5, 1.5, 0.001, false, 3);
-      numberSelector.setValue(1.0);
-     break;
+    case MT_FLOW:
+      numberSelector.setRange(10.0, 200.0, 0.1, false, 1); // 0 - 200 (m3/h)
+      pidSetpoint = 10.0;
+      numberSelector.setValue(pidSetpoint);
+      break;
+
+    case MT_POWER:
+      numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
+      numberSelector.setValue(10.0);
+      break;
+
+    case MT_CAL_FLOW:
+      numberSelector.setRange(0.9, 1.0, 0.001, false, 3);
+      numberSelector.setValue(Cd);
+      break;
+
+     case MT_PID_TUNE_P:
+      numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
+      numberSelector.setValue(Kp);
+      break;
+
+    case MT_PID_TUNE_I:
+      numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
+      numberSelector.setValue(Ki);
+      break;
+
+    case MT_PID_TUNE_D:
+      numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
+      numberSelector.setValue(Kd);
+      break;
   }
 
 }
@@ -283,16 +347,35 @@ void on_button_short_click() {
   // pidSetpoint = compensationFactorB = numberSelector.getValue();
   // compensationFactorA = flow.get();
   switch (modeType) {
-    case SELECT_MODE:
-      initNextMode((ModeType)(uint8_t)numberSelector.getValue()); 
+    case MT_SELECT:
+      initNextMode((ModeType)numberSelector.getValue()); 
       break;
 
-    case MEASURE_MODE:
+    case MT_SPEED:
+    case MT_FLOW:
+    case MT_POWER:
       break;
 
-    case CALIBRATE_FLOW_MODE:
-      modeType = MEASURE_MODE;
+    case MT_CAL_FLOW:
+      saveFloat("Cd", numberSelector.getValue());
+      initCf();
+      modeType = MT_SPEED;
       break;
+    
+    case MT_PID_TUNE_P:
+      saveFloat("Kp", numberSelector.getValue());
+      modeType = MT_FLOW;
+      break;
+
+    case MT_PID_TUNE_I:
+      saveFloat("Ki", numberSelector.getValue());
+      modeType = MT_FLOW;
+      break;
+      
+    case MT_PID_TUNE_D:
+      saveFloat("Kd", numberSelector.getValue());
+      modeType = MT_FLOW;
+      break;  
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -303,10 +386,13 @@ void on_button_long_click() {
   // myPID.SetControllerDirection(direction ?  REVERSE : DIRECT);
   
   switch(modeType) {
-    case MEASURE_MODE:
-      modeType = SELECT_MODE;
+    case MT_SPEED:
+    case MT_FLOW:
+    case MT_POWER:
       numberSelector.setRange(1, 4,  1, true, 0);
-      numberSelector.setValue(1); // sets initial value
+      numberSelector.setValue(modeType); // sets initial value
+      displaySelectMode(modeType);
+      modeType = MT_SELECT;
       break;
     default:
       break;
@@ -344,11 +430,33 @@ void loopRotaryEncoder() {
   if (rotaryEncoder->encoderChanged()) {
     switch (modeType) {
       
-      case MEASURE_MODE:
+      case MT_SELECT:
+        displaySelectMode((ModeType)numberSelector.getValue());
         break;
 
-      case CALIBRATE_FLOW_MODE:
-        Cf = Cd * numberSelector.getValue();
+      case MT_SPEED:
+        setFanSpeed(numberSelector.getValue()* 10.23);
+        break;
+
+      case MT_FLOW:
+      case MT_POWER:
+        pidSetpoint = numberSelector.getValue();
+        break;
+
+      case MT_CAL_FLOW:
+        Cf = flowFactor * numberSelector.getValue();
+        break;
+
+      case MT_PID_TUNE_P:
+        Kp = numberSelector.getValue();
+        break;
+
+      case MT_PID_TUNE_I:
+        Ki = numberSelector.getValue();
+        break;
+      
+      case MT_PID_TUNE_D:
+        Kd = numberSelector.getValue();
         break;
     }
   } 
@@ -389,16 +497,17 @@ void loop() {
   if (ms >= last_millis + 100) {
     last_millis = ms;
 
-    flow.add(
-      getCompensatedFlow(
-        flowPressure.get(),
-        temperatureAmbient.get(),
-        pressureAmbient.get(),
-        humidityAmbient.get()
-      )
-    );
+    readPressureSensors();
 
-    setFanSpeed(rotaryEncoder->readEncoder());
+    flow.add(getFlow(flowPressure.get()));
+
+    if (modeType == MT_SPEED) {
+       setFanSpeed(numberSelector.getValue() * 10.23);
+    } else if (modeType == MT_FLOW) {
+       pidInput = flow.get();
+       pid.Compute();
+       setFanSpeed(pidOutput);
+    }
 
     readPressureSensors();
     
@@ -410,26 +519,27 @@ void loop() {
       readPressureSensors();
 
       // get the measurements from the BME280
-      pressureAmbient.add(bme280.readPressure() / 100.0); // convert from Pa to hPa
+      pressureAbsolute.add(bme280.readPressure() / 100.0); // convert from Pa to hPa
       readPressureSensors();
       temperatureAmbient.add(bme280.readTemperature());
       readPressureSensors();
       humidityAmbient.add(bme280.readHumidity());
       readPressureSensors();
 
+      setRho(temperatureAmbient.get(), pressureAbsolute.get() * 100.0,humidityAmbient.get());
+
       Serial.printf("delay: %u\n", millis() - ms);
       Serial.printf("Loop count: %u\n", loopCount); // 168 loops/second
       Serial.printf("Flow pressure: %.1f Pa\n", flowPressure.get());
       Serial.printf("PWM fan dutycycle: %.1f%%\n", pidOutput/10.23);
       loopCount = 0;
-      // 13ms
-      // Serial.printf("Loop duaration: %u\n", millis()- last_millis);
     }
     
     // every 2 seconds
     if (loopcnt++ % 20 == 0) {
-      // 42ms
-      displayMeasurements();
+      if (modeType != MT_SELECT) {
+        displayMeasurements(); // 42ms
+      }
       loopcnt = 0;
     }
   }
@@ -614,10 +724,22 @@ static void displayMeasurements() {
 
   readPressureSensors();
 
-  // display setpoint zero pressure
+  
   display.setTextSize(1);
   display.setCursor(0, 0);
-  display.printf("Sp %.1f Pa", pidSetpoint);
+  if (modeType == MT_CAL_FLOW) {
+    // display setpoint Cf
+    display.printf("Cd: %.3f", numberSelector.getValue());
+  } else if (modeType == MT_SPEED) {
+    // display setpoint speed fan
+    display.printf("fan %.1f%%", numberSelector.getValue());
+  } else if (modeType == MT_FLOW) {
+    // display setpoint flow
+    display.printf("f %.1fm3/h", numberSelector.getValue());
+  } else if (modeType == MT_POWER) {
+    // display setpoint power
+    display.printf("P %.1f%%", numberSelector.getValue());
+  }
   readPressureSensors();
 
   // display flow
@@ -633,9 +755,9 @@ static void displayMeasurements() {
   printAlignRight("m3/h", 127, 21);
   readPressureSensors();
 
-  // display zero pressure
+  // display flow pressure
   display.setCursor(0, 41);
-  display.printf("Pz %.1f Pa", 0.0);
+  display.printf("Pf %.1f Pa", flowPressure.get());
   readPressureSensors();
 
   // display temperature
@@ -645,7 +767,7 @@ static void displayMeasurements() {
 
   // display absolute pressure
   display.setCursor(0, 57);
-  display.printf("Pa %.1f hPa", pressureAmbient.get());
+  display.printf("%.1f hPa", pressureAbsolute.get());
   readPressureSensors();
 
   // display humidity
@@ -658,20 +780,30 @@ static void displayMeasurements() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-static void displaySelectMode(ModeType type) {
+static void displaySelectMode(ModeType mtype) {
   
   display.clearDisplay();
   display.setTextSize(1);
 
-  if (type == MEASURE_MODE)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  if (mtype == MT_SPEED)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 8);
-  display.print("Measure Mode");
-  if (type == MEASURE_MODE) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  display.print("Speed Mode");
+  if (mtype == MT_SPEED) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
-  if (type == CALIBRATE_FLOW_MODE) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 24);
+  if (mtype == MT_FLOW)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 18);
+  display.print("Flow Mode");
+  if (mtype == MT_FLOW) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mtype == MT_POWER)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 28);
+  display.print("Power Mode");
+  if (mtype == MT_POWER) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mtype == MT_CAL_FLOW) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 38);
   display.print("Calibrate Flow");
-  if (type == CALIBRATE_FLOW_MODE) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  if (mtype == MT_CAL_FLOW) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   display.display();
 
@@ -684,7 +816,7 @@ static void displaySelectMode(ModeType type) {
  * @param absPressurePa Absolute luchtdruk in Pascal van de BME280.
  * @param humidityPct Relatieve vochtigheid in % van de BME280.
  */
-float getRho(float tempC, float absPressurePa, float humidityPct) {
+static void setRho(float tempC, float absPressurePa, float humidityPct) {
 
     // --- 1. Luchtdichtheid berekenen (Vochtige lucht) ---
     float T = tempC + 273.15; // Kelvin
@@ -696,11 +828,11 @@ float getRho(float tempC, float absPressurePa, float humidityPct) {
     float pd = absPressurePa - pv;
 
     // rho = (Pd / (Rd * T)) + (Pv / (Rv * T))
-    return (pd / (287.058 * T)) + (pv / (461.495 * T));
+    rho = (pd / (287.058 * T)) + (pv / (461.495 * T));
 }
 //////////////////////////////////////////////////////////////////////////
 
-//Deze functie berekent eerst de actuele luchtdichtheid en gebruikt die vervolgens 
+// Deze functie berekent eerst de actuele luchtdichtheid en gebruikt die vervolgens 
 // om de volumestroom door de Venturi te bepalen.
 
 /**
@@ -710,29 +842,28 @@ float getRho(float tempC, float absPressurePa, float humidityPct) {
  * @param absPressurePa Absolute luchtdruk in Pascal van de BME280.
  * @param humidityPct Relatieve vochtigheid in % van de BME280.
  */
-float getCompensatedFlow(float deltaP, float tempC, float absPressurePa, float humidityPct) {
+float getFlow(float deltaP) {
     if (deltaP <= 0) return 0.0;
 
     // --- 1. get density air
-    float rho = getRho(tempC, absPressurePa, humidityPct);
+    //float rho = getRho(tempC, absPressurePa, humidityPct);
 
     // --- 2. Venturi Constanten ---
-    const float D = 0.116;      // Inlet diameter (m)
-    const float d = 0.087;      // Throat diameter (m)
-    const float Cd = 0.975;     // Discharge coefficient (adjust after calibration)    
-    const float beta = d / D;
-    const float Cb = 1 - pow(beta, 4);
-    const float areaThroat = (PI * pow(d, 2)) / 4.0;
+    // const float D = 0.116;      // Inlet diameter (m)
+    // const float d = 0.087;      // Throat diameter (m)
+    // const float Cd = 0.975;     // Discharge coefficient (adjust after calibration)    
+    // const float beta = d / D;
+    // const float Cb = 1 - pow(beta, 4);
+    // const float A2 = (PI * pow(d, 2)) / 4.0;
     
-    // --- 3. The Flow Formule (Bernoulli + continuïteit) ---
+    // The Flow Formule (Bernoulli + continuïteit)
     // Q = Cd * A2 * sqrt( (2 * deltaP) / (rho * (1 - beta^4)) )
     float velocityThroat = sqrt((2 * deltaP) / (rho * Cb));
-    float flowM3s = Cd * areaThroat * velocityThroat;
+    float flowM3s = Cd * A2 * velocityThroat;
 
     return flowM3s * 3600.0; // Omrekenen naar m3/h
 }
 //////////////////////////////////////////////////////////////////////////
-
 
 /**
   *                    ____________
@@ -748,7 +879,7 @@ float getCompensatedFlow(float deltaP, float tempC, float absPressurePa, float h
 */
 
 static float calculateFlowCompensated(float dP) {
-  float Pabs = pressureAmbient.get() * 100.0;
+  float Pabs = pressureAbsolute.get() * 100.0;
   float Tamb = temperatureAmbient.get() + 273.15;
 
   return dP > 0.0 ? 620.21 * sqrt(dP * Tamb / Pabs) : 0.0; // (m³/h)
