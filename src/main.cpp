@@ -274,6 +274,10 @@ void setup() {
   Serial.printf("offset flow %.1f\n", offsetFlowPressure);
 
   // initialize the PID variables
+  Kp = getFloat("Kp", Kp);
+  Ki = getFloat("Ki", Ki );
+  Kd = getFloat("Kd", Kd);
+  pid.SetTunings(Kp, Ki, Kd);
   pidSetpoint = 0.0;
   pidInput = 0.0;
 
@@ -339,7 +343,6 @@ void initNextMode(ModeType type) {
       numberSelector.setValue(Kd);
       break;
   }
-
 }
 //////////////////////////////////////////////////////////////////////////
 
@@ -359,22 +362,22 @@ void on_button_short_click() {
     case MT_CAL_FLOW:
       saveFloat("Cd", numberSelector.getValue());
       initCf();
-      modeType = MT_SPEED;
+      initNextMode(MT_SPEED);
       break;
     
     case MT_PID_TUNE_P:
       saveFloat("Kp", numberSelector.getValue());
-      modeType = MT_FLOW;
+      initNextMode(MT_FLOW);
       break;
 
     case MT_PID_TUNE_I:
       saveFloat("Ki", numberSelector.getValue());
-      modeType = MT_FLOW;
+      initNextMode(MT_FLOW);
       break;
       
     case MT_PID_TUNE_D:
       saveFloat("Kd", numberSelector.getValue());
-      modeType = MT_FLOW;
+      initNextMode(MT_FLOW);
       break;  
   }
 }
@@ -389,7 +392,7 @@ void on_button_long_click() {
     case MT_SPEED:
     case MT_FLOW:
     case MT_POWER:
-      numberSelector.setRange(1, 4,  1, true, 0);
+      numberSelector.setRange(1, 7,  1, true, 0);
       numberSelector.setValue(modeType); // sets initial value
       displaySelectMode(modeType);
       modeType = MT_SELECT;
@@ -449,14 +452,17 @@ void loopRotaryEncoder() {
 
       case MT_PID_TUNE_P:
         Kp = numberSelector.getValue();
+        pid.SetTunings(Kp, Ki, Kd);
         break;
 
       case MT_PID_TUNE_I:
         Ki = numberSelector.getValue();
+        pid.SetTunings(Kp, Ki, Kd);
         break;
       
       case MT_PID_TUNE_D:
         Kd = numberSelector.getValue();
+        pid.SetTunings(Kp, Ki, Kd);
         break;
     }
   } 
@@ -501,14 +507,21 @@ void loop() {
 
     flow.add(getFlow(flowPressure.get()));
 
-    if (modeType == MT_SPEED) {
-       setFanSpeed(numberSelector.getValue() * 10.23);
-    } else if (modeType == MT_FLOW) {
-       pidInput = flow.get();
-       pid.Compute();
-       setFanSpeed(pidOutput);
-    }
+    switch (modeType) {
+      
+      case MT_SPEED:
+        setFanSpeed(numberSelector.getValue() * 10.23);
+        break;
 
+      case MT_FLOW:
+      case MT_PID_TUNE_P:
+      case MT_PID_TUNE_I:
+      case MT_PID_TUNE_D:
+        pidInput = flow.get();
+        pid.Compute();
+        setFanSpeed(pidOutput);
+        break;
+    }
     readPressureSensors();
     
     // every second
@@ -655,17 +668,10 @@ static void setOledBrightness(uint8_t brightness) {
 
 static void initDisplay(void) {
   display.begin(0x3C, true);
-  //display.setBrightness(0x60);
   setOledBrightness(0x60);
-  //display.flipScreenVertically(); // turn the display upside down;
-  // ArialMT_Plain_10, ArialMT_Plain_16, ArialMT_Plain_24
-  //display.setFont(ArialMT_Plain_16);
-  //display.setTextSize(16);
-  //display.setTextAlignment(TEXT_ALIGN_LEFT);
   display.clearDisplay();
   display.setTextColor(SH110X_WHITE, SH110X_BLACK);
   display.setTextSize(1);          // schaalfactor
-  //display.drawString(0, 24, "Display ready");
   display.setCursor(0,24);
   display.print("Display ready");
   display.display();
@@ -723,7 +729,6 @@ static void displayMeasurements() {
   display.clearDisplay();
 
   readPressureSensors();
-
   
   display.setTextSize(1);
   display.setCursor(0, 0);
@@ -739,6 +744,15 @@ static void displayMeasurements() {
   } else if (modeType == MT_POWER) {
     // display setpoint power
     display.printf("P %.1f%%", numberSelector.getValue());
+  } else if (modeType == MT_PID_TUNE_P) {
+    // display setpoint power
+    display.printf("Kp %.2f", numberSelector.getValue());
+  } else if (modeType == MT_PID_TUNE_I) {
+    // display setpoint power
+    display.printf("Ki %.2f", numberSelector.getValue());
+  } else if (modeType == MT_PID_TUNE_D) {
+    // display setpoint power
+    display.printf("Kd %.2f", numberSelector.getValue());     
   }
   readPressureSensors();
 
@@ -786,24 +800,39 @@ static void displaySelectMode(ModeType mtype) {
   display.setTextSize(1);
 
   if (mtype == MT_SPEED)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 8);
+  display.setCursor(0, 1);
   display.print("Speed Mode");
   if (mtype == MT_SPEED) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (mtype == MT_FLOW)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 18);
+  display.setCursor(0, 10);
   display.print("Flow Mode");
   if (mtype == MT_FLOW) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (mtype == MT_POWER)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 28);
+  display.setCursor(0, 19);
   display.print("Power Mode");
   if (mtype == MT_POWER) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (mtype == MT_CAL_FLOW) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 38);
+  display.setCursor(0, 28);
   display.print("Calibrate Flow");
   if (mtype == MT_CAL_FLOW) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mtype == MT_PID_TUNE_P) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 37);
+  display.print("Tune Kp");
+  if (mtype == MT_PID_TUNE_P) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mtype == MT_PID_TUNE_I) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 46);
+   display.print("Tune Ki");
+  if (mtype == MT_PID_TUNE_I) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  
+  if (mtype == MT_PID_TUNE_D) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 55);
+   display.print("Tune Kd");
+  if (mtype == MT_PID_TUNE_D) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   display.display();
 
