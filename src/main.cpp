@@ -762,12 +762,12 @@ static void displayMeasurements() {
  if (modeType == MT_SPEED) {
     // display setpoint speed fan
     display.printf("Sf %.1f%%", numberSelector.getValue());
-    printf(message, "%urpm", tachoRPM);
+    snprintf(message, sizeof(message), "%urpm", tachoRPM);
     printAlignRight(message,127,0);
   } else if (modeType == MT_FLOW) {
     // display setpoint flow
     display.printf("fl %.1fm3/h", numberSelector.getValue());
-    printf(message, "%urpm", tachoRPM);
+    snprintf(message, sizeof(message), "%urpm", tachoRPM);
     printAlignRight(message,127,0);
   } else if (modeType == MT_POWER) {
     // display setpoint power
