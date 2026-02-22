@@ -19,7 +19,7 @@
 // Pin definitions
 const int FAN_ON_PIN  = 14;
 const int FAN_PWM_PIN = 27; 
-const int FAN_TACHO_PIN = 25;
+const int FAN_TACHO_PIN = 23;
 
 const int I2C_SDA0_PIN = 21;
 const int I2C_SCL0_PIN = 22;
@@ -225,7 +225,7 @@ void setup() {
   pinMode(FAN_ON_PIN, OUTPUT);
   digitalWrite(FAN_ON_PIN, LOW);
 
-  pinMode(FAN_TACHO_PIN, INPUT_PULLUP); // GPIO 15
+  pinMode(FAN_TACHO_PIN, INPUT_PULLUP); // GPIO 23
   attachInterrupt(digitalPinToInterrupt(FAN_TACHO_PIN), countPulse_ISR, FALLING);
 
   Serial.begin(115200);
