@@ -18,7 +18,8 @@
 
 // Pin definitions
 const int FAN_ON_PIN  = 14;
-const int PWM_FAN_PIN = 27; 
+const int FAN_PWM_PIN = 27; 
+const int FAN_TACHO_PIN = 25;
 
 const int I2C_SDA0_PIN = 21;
 const int I2C_SCL0_PIN = 22;
@@ -40,6 +41,11 @@ const int ROTARY_ENCODER_STEPS = 4;
 const int PWM_FAN_CHAN = LEDC_CHANNEL_0;
 const int PWM_FREQ = 25000;    // 25 kHz frequency for computer fans
 const int PWM_RESOLUTION = 10; // 10-bit resolution (0-1023)
+
+// tachometer
+volatile uint32_t pulseCycles = 300;
+volatile uint32_t pulseCount = 0;
+volatile uint32_t tachoRPM = 0;
 
 // Venturi Constants
 const float D = 0.116;      // Inlet diameter (m)
@@ -95,15 +101,15 @@ double pidSetpoint, pidInput, pidOutput;
 double Kp=6, Ki=3, Kd=0;
 PID pid(&pidInput, &pidOutput, &pidSetpoint, Kp, Ki, Kd, REVERSE);
 
-const float flowFactor = 620.21;
-float Cf = Cd * flowFactor;
+const float flowFactor = 620.21; // obsolete
+float Cf = Cd * flowFactor; // obsolete
 float offsetFlowPressure;
 float rho = 1.2; // densitity of air at 1013,25 hPa, 20 C, and 60 %Rh (Kg/m3)
 
 static void  initDisplay(void);
 static void  displayMeasurements();
 static void  displaySelectMode(ModeType);
-static void  displayNumberSetpoint();
+static void  displayTextNumber(const char *txt, float);
 static void  initBME280();
 static void  initSDP(SensirionI2CSdp&, TwoWire&);
 static float calculateFlowCompensated(float dP);
@@ -117,6 +123,11 @@ static void  setRho(float tempC, float absPressurePa, float humidityPct);
 // IRAM_ATTR places the function in RAM for faster execution
 void IRAM_ATTR Timer0_ISR() {
   ms10_passed = true;
+  if (--pulseCycles == 0) {
+    pulseCycles = 300;
+    tachoRPM = pulseCount * 10;
+    pulseCount = 0;
+  }
 }
 //////////////////////////////////////////////////////////////////////////
 
@@ -127,6 +138,11 @@ void IRAM_ATTR readEncoder_ISR() {
 
 void IRAM_ATTR readButton_ISR() {
     rotaryEncoder->readButton_ISR();
+}
+//////////////////////////////////////////////////////////////////////////
+
+void IRAM_ATTR countPulse_ISR() {
+  pulseCount++;
 }
 //////////////////////////////////////////////////////////////////////////
 
@@ -165,12 +181,10 @@ void saveFloat(const char* key, float value) {
 //////////////////////////////////////////////////////////////////////////
 
 void initCf() {
-  preferences.begin("testbench", true);
-  Cd = preferences.getFloat("Cd", 0.0);
+  Cd = getFloat("Cd", 0.975);
   if (Cd >= 0.9 && Cd <= 1.0) {
     Cf = flowFactor * Cd;
   }
-  preferences.end();
 }
 //////////////////////////////////////////////////////////////////////////
 
@@ -211,6 +225,9 @@ void setup() {
   pinMode(FAN_ON_PIN, OUTPUT);
   digitalWrite(FAN_ON_PIN, LOW);
 
+  pinMode(FAN_TACHO_PIN, INPUT_PULLUP); // GPIO 15
+  attachInterrupt(digitalPinToInterrupt(FAN_TACHO_PIN), countPulse_ISR, FALLING);
+
   Serial.begin(115200);
 
   Serial.println("\ntestbench_airflowmeter is starting up...");
@@ -224,7 +241,7 @@ void setup() {
   // Configure PWM
   Serial.println("Setup PWM");
   ledcSetup(PWM_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(PWM_FAN_PIN, PWM_FAN_CHAN);
+  ledcAttachPin(FAN_PWM_PIN, PWM_FAN_CHAN);
  
   // Set initial fan speed to zero
   setFanSpeed(0);
@@ -360,8 +377,9 @@ void on_button_short_click() {
       break;
 
     case MT_CAL_FLOW:
-      saveFloat("Cd", numberSelector.getValue());
-      initCf();
+      Cd = numberSelector.getValue();
+      saveFloat("Cd", Cd);
+      initCf(); // obsolete
       initNextMode(MT_SPEED);
       break;
     
@@ -439,8 +457,7 @@ void loopRotaryEncoder() {
 
       case MT_SPEED:
         setFanSpeed(numberSelector.getValue()* 10.23);
-        display.printf("Sf %.1f%%", numberSelector.getValue());
-
+        displayTextNumber("Sf %.1f%%", numberSelector.getValue());
         break;
 
       case MT_FLOW:
@@ -454,8 +471,8 @@ void loopRotaryEncoder() {
         break;
 
       case MT_CAL_FLOW:
-        Cf = flowFactor * numberSelector.getValue();
-        displayTextNumber("Cd %.3f", Kp);
+        Cd = numberSelector.getValue();
+        displayTextNumber("Cd %.3f", Cd);
         break;
 
       case MT_PID_TUNE_P:
@@ -745,9 +762,13 @@ static void displayMeasurements() {
  if (modeType == MT_SPEED) {
     // display setpoint speed fan
     display.printf("Sf %.1f%%", numberSelector.getValue());
+    printf(message, "%urpm", tachoRPM);
+    printAlignRight(message,127,0);
   } else if (modeType == MT_FLOW) {
     // display setpoint flow
-    display.printf("flow %.1fm3/h", numberSelector.getValue());
+    display.printf("fl %.1fm3/h", numberSelector.getValue());
+    printf(message, "%urpm", tachoRPM);
+    printAlignRight(message,127,0);
   } else if (modeType == MT_POWER) {
     // display setpoint power
     display.printf("Pf %.1f%%", numberSelector.getValue());
@@ -755,13 +776,13 @@ static void displayMeasurements() {
     // display discharge coefficient venturi
     display.printf("Cd: %.3f", numberSelector.getValue());
   } else if (modeType == MT_PID_TUNE_P) {
-    // display Proportional(P) component PID
+    // display proportional gain PID controller
     display.printf("Kp %.2f", numberSelector.getValue());
   } else if (modeType == MT_PID_TUNE_I) {
-    // display Integral(I) component PID
+    // display integral gain PID controller
     display.printf("Ki %.2f", numberSelector.getValue());
   } else if (modeType == MT_PID_TUNE_D) {
-    // display Derivative(D) component PID
+    // display derivative gain PID controller
     display.printf("Kd %.2f", numberSelector.getValue());     
   }
   readPressureSensors();
@@ -921,7 +942,7 @@ static float calculateFlowCompensated(float dP) {
   float Pabs = pressureAbsolute.get() * 100.0;
   float Tamb = temperatureAmbient.get() + 273.15;
 
-  return dP > 0.0 ? 620.21 * sqrt(dP * Tamb / Pabs) : 0.0; // (m³/h)
+  return dP > 0.0 ? Cf * sqrt(dP * Tamb / Pabs) : 0.0; // (m³/h)
 }
 //////////////////////////////////////////////////////////////////////////
 
