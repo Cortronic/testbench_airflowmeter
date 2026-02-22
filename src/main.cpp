@@ -439,30 +439,41 @@ void loopRotaryEncoder() {
 
       case MT_SPEED:
         setFanSpeed(numberSelector.getValue()* 10.23);
+        display.printf("Sf %.1f%%", numberSelector.getValue());
+
         break;
 
       case MT_FLOW:
+        pidSetpoint = numberSelector.getValue();
+        displayTextNumber("flow %.1fm3/s", pidSetpoint);
+        break;
+
       case MT_POWER:
         pidSetpoint = numberSelector.getValue();
+        displayTextNumber("Pf %.1f%%", pidSetpoint);
         break;
 
       case MT_CAL_FLOW:
         Cf = flowFactor * numberSelector.getValue();
+        displayTextNumber("Cd %.3f", Kp);
         break;
 
       case MT_PID_TUNE_P:
         Kp = numberSelector.getValue();
         pid.SetTunings(Kp, Ki, Kd);
+        displayTextNumber("Kp %.2f", Kp);
         break;
 
       case MT_PID_TUNE_I:
         Ki = numberSelector.getValue();
         pid.SetTunings(Kp, Ki, Kd);
+        displayTextNumber("Ki %.2f", Ki);
         break;
       
       case MT_PID_TUNE_D:
         Kd = numberSelector.getValue();
         pid.SetTunings(Kp, Ki, Kd);
+        displayTextNumber("Kd %.2f", Kd);
         break;
     }
   } 
@@ -489,11 +500,8 @@ void readPressureSensors() {
 
 void loop() {
   static uint32_t loopcnt = 0;
-  static uint32_t loopCount = 0;
   static uint32_t last_millis = 0;
   uint32_t ms = millis();
-  
-  ++loopCount;
   
   readPressureSensors();
 
@@ -539,22 +547,23 @@ void loop() {
       humidityAmbient.add(bme280.readHumidity());
       readPressureSensors();
 
-      setRho(temperatureAmbient.get(), pressureAbsolute.get() * 100.0,humidityAmbient.get());
-
-      Serial.printf("delay: %u\n", millis() - ms);
-      Serial.printf("Loop count: %u\n", loopCount); // 168 loops/second
       Serial.printf("Flow pressure: %.1f Pa\n", flowPressure.get());
-      Serial.printf("PWM fan dutycycle: %.1f%%\n", pidOutput/10.23);
-      loopCount = 0;
+      Serial.printf("PWM fan dutycycle: %.1f%%\n", pidOutput / 10.23);
+    }
+
+    // every minute
+    if (loopcnt % 600 == 0) {
+       setRho(temperatureAmbient.get(), pressureAbsolute.get() * 100.0,humidityAmbient.get());
     }
     
     // every 2 seconds
-    if (loopcnt++ % 20 == 0) {
+    if (loopcnt % 20 == 0) {
       if (modeType != MT_SELECT) {
         displayMeasurements(); // 42ms
       }
-      loopcnt = 0;
     }
+
+    ++loopcnt;
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -709,14 +718,14 @@ static void drawString(int16_t x, int16_t y, const String &text) {
 }
 //////////////////////////////////////////////////////////////////////////
 
-static void displayNumberSetpoint() {
+static void displayTextNumber(const char *txt, float number) {
   // display setpoint zero pressure
   display.setTextSize(1);
   display.setCursor(0, 0);
   display.print("          ");
   readPressureSensors();
   display.setCursor(0, 0);
-  display.printf("Sp %.1fPa", numberSelector.getValue());
+  display.printf(txt, number);
   readPressureSensors();
   display.display();
   readPressureSensors();
@@ -732,26 +741,27 @@ static void displayMeasurements() {
   
   display.setTextSize(1);
   display.setCursor(0, 0);
-  if (modeType == MT_CAL_FLOW) {
-    // display setpoint Cf
-    display.printf("Cd: %.3f", numberSelector.getValue());
-  } else if (modeType == MT_SPEED) {
+  
+ if (modeType == MT_SPEED) {
     // display setpoint speed fan
-    display.printf("fan %.1f%%", numberSelector.getValue());
+    display.printf("Sf %.1f%%", numberSelector.getValue());
   } else if (modeType == MT_FLOW) {
     // display setpoint flow
-    display.printf("f %.1fm3/h", numberSelector.getValue());
+    display.printf("flow %.1fm3/h", numberSelector.getValue());
   } else if (modeType == MT_POWER) {
     // display setpoint power
-    display.printf("P %.1f%%", numberSelector.getValue());
+    display.printf("Pf %.1f%%", numberSelector.getValue());
+  } else if (modeType == MT_CAL_FLOW) {
+    // display discharge coefficient venturi
+    display.printf("Cd: %.3f", numberSelector.getValue());
   } else if (modeType == MT_PID_TUNE_P) {
-    // display setpoint power
+    // display Proportional(P) component PID
     display.printf("Kp %.2f", numberSelector.getValue());
   } else if (modeType == MT_PID_TUNE_I) {
-    // display setpoint power
+    // display Integral(I) component PID
     display.printf("Ki %.2f", numberSelector.getValue());
   } else if (modeType == MT_PID_TUNE_D) {
-    // display setpoint power
+    // display Derivative(D) component PID
     display.printf("Kd %.2f", numberSelector.getValue());     
   }
   readPressureSensors();
