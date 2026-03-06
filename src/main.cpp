@@ -124,9 +124,9 @@ static void  setRho(float tempC, float absPressurePa, float humidityPct);
 void IRAM_ATTR Timer0_ISR() {
   ms10_passed = true;
   if (--pulseCycles == 0) {
-    pulseCycles = 300;
     tachoRPM = pulseCount * 10;
     pulseCount = 0;
+    pulseCycles = 300;
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -345,7 +345,7 @@ void initNextMode(ModeType type) {
       numberSelector.setValue(Cd);
       break;
 
-     case MT_PID_TUNE_P:
+    case MT_PID_TUNE_P:
       numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
       numberSelector.setValue(Kp);
       break;
