@@ -7,7 +7,7 @@
   <img src="testbench2.png" width="600" height= "240">
 </p>
 
-A high-precision, modular 125mm wind tunnel designed for the calibration and validation of airflow meters. This rig serves as the absolute reference for the Zero-Pressure Airflow Meter project.
+A high-precision, modular 125mm wind tunnel designed for the calibration and validation of airflow meters. This rig serves as the absolute reference for the [Zero-Pressure Airflow Meter project](https://github.com/Cortronic/airflowmeter).
 
 ## 1. Project Overview
 
