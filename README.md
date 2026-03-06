@@ -1,8 +1,10 @@
 # Airflow Calibration Test Bench
 
 <p align="left">
-  <img src="testbench1.png" width="400" height= "200">
-  <img src="testbench2.png" width="400" height= "160">
+  <img src="testbench1.png" width="600" height= "300">
+</p>  
+<p align="left">
+  <img src="testbench2.png" width="600" height= "240">
 </p>
 
 A high-precision, modular 125mm wind tunnel designed for the calibration and validation of airflow meters. This rig serves as the absolute reference for the Zero-Pressure Airflow Meter project.
@@ -22,6 +24,7 @@ The rig uses an **ESP32-WROOM** to process environmental data and differential p
 * **Sensor 1:** SDP800-500PA (Differential pressure across the Venturi).
 * **Sensor 2:** BME280 (Ambient temperature, humidity, and barometric pressure).
 * **Display:** 1.3" OLED (SH1106) for real-time reference data.
+* **Encoder:** Rotary encode with pushbutton for speedcontrol and menu navigation.
 * **Actuator:** Arctic S12038-8K High-Static Pressure Fan (12V PWM).
 
 ### ESP32 Pinout
@@ -31,7 +34,7 @@ The rig uses an **ESP32-WROOM** to process environmental data and differential p
 | **I2C SDA** | Data | **21** |
 | **I2C SCL** | Clock | **22** |
 | **Fan PWM** | Speed Control | **27** |
-| **Encoder** | Input (Menu/Power) | **2, 4, 15** |
+| **Encoder** | Input (Menu/Power) | **18, 19, 5** |
 
 ---
 
