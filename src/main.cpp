@@ -18,9 +18,12 @@
 
 // Pin definitions
 const int FAN_ON_PIN  = 14;
-const int FAN_PWM_PIN = 27; 
-const int FAN_TACHO_PIN = 23;
+const int FAN_PULL_PWM_PIN = 27;
+const int FAN_PUSH_PWM_PIN = 12;
+const int FAN_PULL_TACHO_PIN = 23;
+const int FAN_PUSH_TACHO_PIN = 13;
 
+//I2C pin definitions
 const int I2C_SDA0_PIN = 21;
 const int I2C_SCL0_PIN = 22;
 const int I2C_SDA1_PIN = 25;
@@ -38,14 +41,18 @@ const int ROTARY_ENCODER_BUTTON_PIN = 5;
 const int ROTARY_ENCODER_STEPS = 4;
 
 // PWM settings
-const int PWM_FAN_CHAN = LEDC_CHANNEL_0;
+const int PWM_PULL_FAN_CHAN = LEDC_CHANNEL_0;
+const int PWM_PUSH_FAN_CHAN = LEDC_CHANNEL_1;
 const int PWM_FREQ = 25000;    // 25 kHz frequency for computer fans
 const int PWM_RESOLUTION = 10; // 10-bit resolution (0-1023)
 
 // tachometer
-volatile uint32_t pulseCycles = 300;
-volatile uint32_t pulseCount = 0;
-volatile uint32_t tachoRPM = 0;
+volatile uint32_t tachoPullFanPulseCycles = 300;
+volatile uint32_t tachoPushFanPulseCycles = 300;
+volatile uint32_t tachoPushFanPulseCount = 0;
+volatile uint32_t tachoPullFanPulseCount = 0;
+volatile uint32_t tachoPullFanRPM = 0;
+volatile uint32_t tachoPushFanRPM = 0;
 
 // Venturi Constants
 const float D = 0.116;      // Inlet diameter (m)
@@ -68,7 +75,8 @@ AiEsp32RotaryEncoderNumberSelector numberSelector = AiEsp32RotaryEncoderNumberSe
 Preferences preferences;
 
 Smoothed<float> flow;
-Smoothed<float> flowPressure;
+Smoothed<float> venturiPressure;
+Smoothed<float> balancePressure;
 Smoothed<float> calibration;
 Smoothed<float> pressureAbsolute;
 Smoothed<float> temperatureAmbient;
@@ -78,7 +86,8 @@ Smoothed<float> humidityAmbient;
 TwoWire I2C_A = TwoWire(0);
 TwoWire I2C_B = TwoWire(1);
 
-SensirionI2CSdp sdpFlow;
+SensirionI2CSdp sdpVenturi;
+SensirionI2CSdp sdpBalance;
 
 // Initialize the OLED display using Wire library
 // ADDRESS, SDA, SCL  -  SDA and SCL usually populate automatically
@@ -94,22 +103,30 @@ volatile bool ms10_passed = false;
 ModeType modeType = MT_SPEED;
 bool direction = false; // false for return
 
+// setup PID controllers
 // Define Variables we'll be connecting to
-double pidSetpoint, pidInput, pidOutput;
-
+double pidSetpointFlow, pidInputFlow, pidOutputFlow;
 // Specify the links and initial tuning parameters
-double Kp=6, Ki=3, Kd=0;
-PID pid(&pidInput, &pidOutput, &pidSetpoint, Kp, Ki, Kd, REVERSE);
+double KpFlow=6, KiFlow=3, KdFlow=0;
+PID pid(&pidInputFlow, &pidOutputFlow, &pidSetpointFlow, KpFlow, KiFlow, KdFlow, REVERSE);
+
+double pidSetpointBalance, pidInputBalance, pidOutputBalance;
+double KpBalance=6, KiBalance=3, KdBalance=0;
+PID pidBalance(&pidInputBalance, &pidOutputBalance, &pidSetpointBalance, KpBalance, KiBalance, KdBalance, REVERSE);
 
 const float flowFactor = 620.21; // obsolete
 float Cf = Cd * flowFactor; // obsolete
-float offsetFlowPressure;
+float offsetVenturiPressure;
 float rho = 1.2; // densitity of air at 1013,25 hPa, 20 C, and 60 %Rh (Kg/m3)
+
+float offsetBalancePressure = 0.0;
 
 static void  initDisplay(void);
 static void  displayMeasurements();
 static void  displaySelectMode(ModeType);
 static void  displayTextNumber(const char *txt, float);
+static void  displayAdjustSensorOffsets(const char *sensor);
+static void  displayAdjustSensorOffsetsProgress(int16_t progress);
 static void  initBME280();
 static void  initSDP(SensirionI2CSdp&, TwoWire&);
 static float calculateFlowCompensated(float dP);
@@ -123,10 +140,15 @@ static void  setRho(float tempC, float absPressurePa, float humidityPct);
 // IRAM_ATTR places the function in RAM for faster execution
 void IRAM_ATTR Timer0_ISR() {
   ms10_passed = true;
-  if (--pulseCycles == 0) {
-    tachoRPM = pulseCount * 10;
-    pulseCount = 0;
-    pulseCycles = 300;
+  if (--tachoPullFanPulseCycles == 0) {
+    tachoPullFanRPM = tachoPullFanPulseCount * 10;
+    tachoPullFanPulseCount = 0;
+    tachoPullFanPulseCycles = 300;
+  }
+  if (--tachoPushFanPulseCycles == 0) {
+    tachoPushFanRPM = tachoPushFanPulseCount * 10;
+    tachoPushFanPulseCount = 0;
+    tachoPushFanPulseCycles = 300;
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -141,8 +163,13 @@ void IRAM_ATTR readButton_ISR() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void IRAM_ATTR countPulse_ISR() {
-  pulseCount++;
+void IRAM_ATTR tachoPullFanPulseCount_ISR() {
+  tachoPullFanPulseCount++;
+}
+//////////////////////////////////////////////////////////////////////////
+
+void IRAM_ATTR tachoPushFanPulseCount_ISR() {
+  tachoPushFanPulseCount++;
 }
 //////////////////////////////////////////////////////////////////////////
 
@@ -188,6 +215,14 @@ void initCf() {
 }
 //////////////////////////////////////////////////////////////////////////
 
+void loadPreferences() {
+  preferences.begin("testbench", true);
+  offsetBalancePressure = preferences.getFloat("offsetBalance", 0.0);
+  offsetVenturiPressure = preferences.getFloat("offsetVenturi", 0.0);
+  preferences.end();
+}
+//////////////////////////////////////////////////////////////////////////
+
 void setupRotaryEncoder() {
   rotaryEncoder->begin();
   rotaryEncoder->setup(&readEncoder_ISR, &readButton_ISR);
@@ -204,11 +239,11 @@ void setupRotaryEncoder() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void setFanSpeed(uint32_t speed) {
+void setPullFanSpeed(uint32_t speed) {
   static uint32_t lastspeed = 0xFFFFFFFF;
 
   if (lastspeed != speed) {
-    ledcWrite(PWM_FAN_CHAN, speed);
+    ledcWrite(PWM_PULL_FAN_CHAN, speed);
     if (speed == 0) {
       digitalWrite(FAN_ON_PIN, LOW);
     } else if (lastspeed == 0) {
@@ -219,14 +254,87 @@ void setFanSpeed(uint32_t speed) {
 } 
 //////////////////////////////////////////////////////////////////////////
 
+void setPushFanSpeed(uint32_t speed) {
+  static uint32_t lastspeed = 0xFFFFFFFF;
+
+  if (lastspeed != speed) {
+    ledcWrite(PWM_PUSH_FAN_CHAN, speed);
+    if (speed == 0) {
+      digitalWrite(FAN_ON_PIN, LOW);
+    } else if (lastspeed == 0) {
+      digitalWrite(FAN_ON_PIN, HIGH);
+    }
+    lastspeed = speed;
+ }
+} 
+//////////////////////////////////////////////////////////////////////////
+
+void adjustSensorOffsetVenturiPressure() {
+  Serial.println("Adjusting offset venturi pressure sensor."); 
+  for (size_t i = 0; i < 200; i++) {
+    float differentialPressure;
+    float temperature;
+    uint16_t error = sdpVenturi.readMeasurement(differentialPressure, temperature);
+    if (error) {
+       Serial.print("Error trying to execute readMeasurement() from flowsensor");
+       break;
+    }
+    calibration.add(differentialPressure);
+    if (i % 12 == 0) {
+      displayAdjustSensorOffsetsProgress(i * 120 / 200);
+    }
+    delay(15);
+  }
+
+  offsetVenturiPressure = calibration.get();
+  saveFloat("offsetVenturi", offsetVenturiPressure);
+  Serial.printf("offset venturi %f\n", offsetVenturiPressure);
+  delay(500); 
+}
+//////////////////////////////////////////////////////////////////////////
+
+void adjustSensorOffsetBalancePressure() {
+  Serial.println("Adjusting offset balance pressure sensor."); 
+  for (size_t i = 0; i < 200; i++) {
+    float differentialPressure;
+    float temperature;
+    uint16_t error = sdpBalance.readMeasurement(differentialPressure, temperature);
+    if (error) {
+       Serial.print("Error trying to execute readMeasurement() from zeropressuresensor");
+       break;
+    }
+    calibration.add(differentialPressure);
+    if (i % 12 == 0) {
+      displayAdjustSensorOffsetsProgress(i * 120 / 200);
+    }
+    delay(15);
+  }
+  
+  offsetBalancePressure = calibration.get();
+  saveFloat("offsetBalance", offsetBalancePressure);
+  Serial.printf("offset balance %f\n", offsetBalancePressure);
+  delay(500); 
+}
+//////////////////////////////////////////////////////////////////////////
+
+void adjustSensorOffsets() {
+  displayAdjustSensorOffsets("Balance");
+  adjustSensorOffsetBalancePressure();
+  displayAdjustSensorOffsets("Venturi");
+  adjustSensorOffsetVenturiPressure();
+}
+//////////////////////////////////////////////////////////////////////////
+
 void setup() {
   
   // prefent fan from starting up
   pinMode(FAN_ON_PIN, OUTPUT);
   digitalWrite(FAN_ON_PIN, LOW);
 
-  pinMode(FAN_TACHO_PIN, INPUT_PULLUP); // GPIO 23
-  attachInterrupt(digitalPinToInterrupt(FAN_TACHO_PIN), countPulse_ISR, FALLING);
+  pinMode(FAN_PULL_TACHO_PIN, INPUT_PULLUP); // GPIO 23
+  attachInterrupt(digitalPinToInterrupt(FAN_PULL_TACHO_PIN), tachoPullFanPulseCount_ISR, FALLING);
+  pinMode(FAN_PUSH_TACHO_PIN, INPUT_PULLUP); // GPIO 13
+  attachInterrupt(digitalPinToInterrupt(FAN_PUSH_TACHO_PIN), tachoPushFanPulseCount_ISR, FALLING);
 
   Serial.begin(115200);
 
@@ -234,17 +342,20 @@ void setup() {
 
   // set Cf
   initCf();
+  loadPreferences();
 
   // setup RotaryEncoder
   setupRotaryEncoder();
 
   // Configure PWM
   Serial.println("Setup PWM");
-  ledcSetup(PWM_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(FAN_PWM_PIN, PWM_FAN_CHAN);
+  ledcSetup(PWM_PULL_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(FAN_PULL_PWM_PIN, PWM_PULL_FAN_CHAN);
+  ledcSetup(PWM_PUSH_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(FAN_PUSH_PWM_PIN, PWM_PUSH_FAN_CHAN);
  
   // Set initial fan speed to zero
-  setFanSpeed(0);
+  setPullFanSpeed(0);
   delay(1000);
 
   analogReadResolution(12);
@@ -259,44 +370,31 @@ void setup() {
   Serial.println("Setup BME280");
   initBME280();
   delay(500);
-  Serial.println("Setup SDP810 Flow");
-  initSDP(sdpFlow, I2C_B);
+  Serial.println("Setup SDP810 Balance");
+  initSDP(sdpBalance, I2C_A);
+  delay(500);
+  Serial.println("Setup SDP810 Venturi");
+  initSDP(sdpVenturi, I2C_B);
   delay(500);
   
 
   Serial.println("setup smoothed average.");
   flow.begin(SMOOTHED_AVERAGE, 50);
-  flowPressure.begin(SMOOTHED_AVERAGE, 100);
+  balancePressure.begin(SMOOTHED_AVERAGE, 100);
+  venturiPressure.begin(SMOOTHED_AVERAGE, 100);
   calibration.begin(SMOOTHED_AVERAGE, 200);
   pressureAbsolute.begin(SMOOTHED_AVERAGE, 40);
   humidityAmbient.begin(SMOOTHED_AVERAGE, 40);
   temperatureAmbient.begin(SMOOTHED_AVERAGE, 40);
   delay(500);
 
-  //
-  Serial.println("Getting offset flowsensor."); 
-  for (size_t i = 0; i < 200; i++) {
-    float differentialPressure;
-    float temperature;
-    uint16_t error = sdpFlow.readMeasurement(differentialPressure, temperature);
-    if (error) {
-       Serial.print("Error trying to execute readMeasurement() from flowsensor");
-       break;
-    }
-    calibration.add(differentialPressure);
-    delay(10);
-  }
-  delay(500);
-  offsetFlowPressure = calibration.get();
-  Serial.printf("offset flow %.1f\n", offsetFlowPressure);
-
   // initialize the PID variables
-  Kp = getFloat("Kp", Kp);
-  Ki = getFloat("Ki", Ki );
-  Kd = getFloat("Kd", Kd);
-  pid.SetTunings(Kp, Ki, Kd);
-  pidSetpoint = 0.0;
-  pidInput = 0.0;
+  KpFlow = getFloat("Kp", KpFlow);
+  KiFlow = getFloat("Ki", KiFlow);
+  KdFlow = getFloat("Kd", KdFlow);
+  pid.SetTunings(KpFlow, KiFlow, KdFlow);
+  pidSetpointFlow = 0.0;
+  pidInputFlow = 0.0;
 
   // turn the PID on
   Serial.println("turn the PID on.");
@@ -326,13 +424,13 @@ void initNextMode(ModeType type) {
     case MT_SPEED:
       numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
       numberSelector.setValue(10.0);
-      setFanSpeed(102); // 10%
+      setPullFanSpeed(102); // 10%
       break;
 
     case MT_FLOW:
       numberSelector.setRange(10.0, 200.0, 0.1, false, 1); // 0 - 200 (m3/h)
-      pidSetpoint = 10.0;
-      numberSelector.setValue(pidSetpoint);
+      pidSetpointFlow = 10.0;
+      numberSelector.setValue(pidSetpointFlow);
       break;
 
     case MT_POWER:
@@ -347,17 +445,17 @@ void initNextMode(ModeType type) {
 
     case MT_PID_TUNE_P:
       numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
-      numberSelector.setValue(Kp);
+      numberSelector.setValue(KpFlow);
       break;
 
     case MT_PID_TUNE_I:
       numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
-      numberSelector.setValue(Ki);
+      numberSelector.setValue(KiFlow);
       break;
 
     case MT_PID_TUNE_D:
       numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
-      numberSelector.setValue(Kd);
+      numberSelector.setValue(KdFlow);
       break;
   }
 }
@@ -456,18 +554,18 @@ void loopRotaryEncoder() {
         break;
 
       case MT_SPEED:
-        setFanSpeed(numberSelector.getValue()* 10.23);
+        setPullFanSpeed(numberSelector.getValue()* 10.23);
         displayTextNumber("Sf %.1f%%", numberSelector.getValue());
         break;
 
       case MT_FLOW:
-        pidSetpoint = numberSelector.getValue();
-        displayTextNumber("flow %.1fm3/s", pidSetpoint);
+        pidSetpointFlow = numberSelector.getValue();
+        displayTextNumber("flow %.1fm3/s", pidSetpointFlow);
         break;
 
       case MT_POWER:
-        pidSetpoint = numberSelector.getValue();
-        displayTextNumber("Pf %.1f%%", pidSetpoint);
+        pidSetpointFlow = numberSelector.getValue();
+        displayTextNumber("Pf %.1f%%", pidSetpointFlow);
         break;
 
       case MT_CAL_FLOW:
@@ -476,21 +574,21 @@ void loopRotaryEncoder() {
         break;
 
       case MT_PID_TUNE_P:
-        Kp = numberSelector.getValue();
-        pid.SetTunings(Kp, Ki, Kd);
-        displayTextNumber("Kp %.2f", Kp);
+        KpFlow = numberSelector.getValue();
+        pid.SetTunings(KpFlow, KiFlow, KdFlow);
+        displayTextNumber("Kp %.2f", KpFlow);
         break;
 
       case MT_PID_TUNE_I:
-        Ki = numberSelector.getValue();
-        pid.SetTunings(Kp, Ki, Kd);
-        displayTextNumber("Ki %.2f", Ki);
+        KiFlow = numberSelector.getValue();
+        pid.SetTunings(KpFlow, KiFlow, KdFlow);
+        displayTextNumber("Ki %.2f", KiFlow);
         break;
       
       case MT_PID_TUNE_D:
-        Kd = numberSelector.getValue();
-        pid.SetTunings(Kp, Ki, Kd);
-        displayTextNumber("Kd %.2f", Kd);
+        KdFlow = numberSelector.getValue();
+        pid.SetTunings(KpFlow, KiFlow, KdFlow);
+        displayTextNumber("Kd %.2f", KdFlow);
         break;
     }
   } 
@@ -505,11 +603,11 @@ void readPressureSensors() {
     float differentialPressure, temperature;
 
     // 2 ms time to read
-    uint16_t error = sdpFlow.readMeasurement(differentialPressure, temperature);
+    uint16_t error = sdpVenturi.readMeasurement(differentialPressure, temperature);
     if (error) {
-      Serial.print("Error trying to execute readMeasurement from FlowPressure");
+      Serial.print("Error trying to execute readMeasurement from Venturi Pressure sensor");
     } else {
-      flowPressure.add(differentialPressure - offsetFlowPressure);
+      venturiPressure.add(differentialPressure - offsetVenturiPressure);
     }
   }
 }
@@ -530,21 +628,26 @@ void loop() {
 
     readPressureSensors();
 
-    flow.add(getFlow(flowPressure.get()));
+    flow.add(getFlow(venturiPressure.get()));
+
+    // Compute PID for balance pressure
+    pidInputBalance = balancePressure.get();    
+    pid.Compute();
+    setPushFanSpeed(pidOutputBalance); // Apply PWM to fan
 
     switch (modeType) {
       
       case MT_SPEED:
-        setFanSpeed(numberSelector.getValue() * 10.23);
+        setPullFanSpeed(numberSelector.getValue() * 10.23);
         break;
 
       case MT_FLOW:
       case MT_PID_TUNE_P:
       case MT_PID_TUNE_I:
       case MT_PID_TUNE_D:
-        pidInput = flow.get();
+        pidInputFlow = flow.get();
         pid.Compute();
-        setFanSpeed(pidOutput);
+        setPullFanSpeed(pidOutputFlow);
         break;
     }
     readPressureSensors();
@@ -564,8 +667,8 @@ void loop() {
       humidityAmbient.add(bme280.readHumidity());
       readPressureSensors();
 
-      Serial.printf("Flow pressure: %.1f Pa\n", flowPressure.get());
-      Serial.printf("PWM fan dutycycle: %.1f%%\n", pidOutput / 10.23);
+      Serial.printf("Flow pressure: %.1f Pa\n", venturiPressure.get());
+      Serial.printf("PWM fan dutycycle: %.1f%%\n", pidOutputFlow / 10.23);
     }
 
     // every minute
@@ -749,6 +852,26 @@ static void displayTextNumber(const char *txt, float number) {
 }
 //////////////////////////////////////////////////////////////////////////
 
+static void displayAdjustSensorOffsets(const char *sensor) {
+  display.clearDisplay();
+  readPressureSensors();
+  display.setTextSize(1);
+  display.setCursor(0, 28);
+  display.printf("Offset %s...", sensor);
+  readPressureSensors();
+  display.display();
+  readPressureSensors();
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void displayAdjustSensorOffsetsProgress(int16_t progress) {
+  display.fillRect(0, 40, progress, 10, SH110X_WHITE);
+  readPressureSensors();
+  display.display();
+  readPressureSensors();
+}
+//////////////////////////////////////////////////////////////////////////
+
 static void displayMeasurements() {
   char message[32];
   
@@ -762,12 +885,12 @@ static void displayMeasurements() {
  if (modeType == MT_SPEED) {
     // display setpoint speed fan
     display.printf("Sf %.1f%%", numberSelector.getValue());
-    snprintf(message, sizeof(message), "%urpm", tachoRPM);
+    snprintf(message, sizeof(message), "%urpm", tachoPullFanRPM);
     printAlignRight(message,127,0);
   } else if (modeType == MT_FLOW) {
     // display setpoint flow
     display.printf("fl %.1fm3/h", numberSelector.getValue());
-    snprintf(message, sizeof(message), "%urpm", tachoRPM);
+    snprintf(message, sizeof(message), "%urpm", tachoPullFanRPM);
     printAlignRight(message,127,0);
   } else if (modeType == MT_POWER) {
     // display setpoint power
@@ -802,7 +925,7 @@ static void displayMeasurements() {
 
   // display flow pressure
   display.setCursor(0, 41);
-  display.printf("Pf %.1f Pa", flowPressure.get());
+  display.printf("Pf %.1f Pa", venturiPressure.get());
   readPressureSensors();
 
   // display temperature

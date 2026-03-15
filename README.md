@@ -17,24 +17,26 @@ The Calibration Test Bench establishes a known, stable volumetric flow rate ($m^
 
 ## 2. Hardware & Electronics
 
-The rig uses an **ESP32-WROOM** to process environmental data and differential pressure, calculating the reference flow in real-time.
+The rig uses an **ESP32-WROOM** to process environmental data and differential pressure, calculating the reference flow in real-time. To eliminate extreme static underpressure when testing restricted valves, the rig utilizes a coordinated dual-fan setup.
 
 ### Components
 
-* **Sensor 1:** SDP800-500PA (Differential pressure across the Venturi).
+* **Sensor 1:** SDP810-500PA (Differential pressure across the Venturi).
+* **Sensor 2:** SDP810-125PA (Differential pressure at the inlet of the Venturi).
 * **Sensor 2:** BME280 (Ambient temperature, humidity, and barometric pressure).
 * **Display:** 1.3" OLED (SH1106) for real-time reference data.
 * **Encoder:** Rotary encode with pushbutton for speedcontrol and menu navigation.
-* **Actuator:** Arctic S12038-8K High-Static Pressure Fan (12V PWM).
+* **Actuator:** 2 x Arctic S12038-8K High-Static Pressure Fan (12V PWM).
 
 ### ESP32 Pinout
 
-| Component | Function | GPIO |
-| --- | --- | --- |
-| **I2C SDA** | Data | **21** |
-| **I2C SCL** | Clock | **22** |
-| **Fan PWM** | Speed Control | **27** |
-| **Encoder** | Input (Menu/Power) | **18, 19, 5** |
+| Component | Function | ESP32 GPIO | Notes |
+| --- | --- | --- | --- |
+| **I2C Bus 0** | Data / Clock | **21 / 22** | BME280, OLED, SDP800 (Venturi) |
+| **I2C Bus 1** | Data / Clock | **25 / 26** | SDP800 (Zero-Pressure Sensor) |
+| **Encoder** | CLK / DT / SW | **2, 4, 15** | Menu & Calibration |
+| **PWM Pull Fan** | Speed Control | **27** | 25kHz PWM signal |
+| **PWM Push Fan** | Balance Control | **27** | 25kHz PWM signal |
 
 ---
 
@@ -44,15 +46,28 @@ The rig uses an **ESP32-WROOM** to process environmental data and differential p
 
 The rig is built from 125mm diameter sections, optimized for standard ventilation parts:
 
-1. **Inlet Interface:** A 500x500mm mounting panel for air valves.
-2. **Flow Conditioning:** Dual honeycomb straighteners to eliminate swirl and ensure a laminar profile before the Venturi.
-3. **The Venturi Core:** A 3-part 3D-printed assembly ($D=120\text{mm}$, $d=90\text{mm}$).
-4. **Pressure Sensing:** Dual piezometric (averaging) rings at the inlet and throat for stable readings.
-5. **Drive Section:** A high-power server fan capable of overcoming the resistance of filters and valves.
+1. **Inlet Interface:** A 500x500mm mounting panel for airextract valves.
+2. **Push Drive Section:** A high-power server fan capable of overcoming the resistance of filters and valves.
+3. **Flow Conditioning:** Dual honeycomb straighteners to eliminate swirl and ensure a laminar profile before the Venturi.
+4. **The Venturi Core:** A 3-part 3D-printed assembly ($D=120\text{mm}$, $d=90\text{mm}$).
+5. **Pressure Sensing:** Dual piezometric (averaging) rings at the inlet and throat for stable readings.
+6. **Pull Drive Section:** A high-power server fan capable of overcoming the resistance of filters and valves.
+7. **Outlet Interface:** A 500x500mm mounting panel for airsupply valves.
 
 ---
 
-## 4. Calibration Physics
+## 4. Active Static Pressure Balancing
+The Test Bench features an advanced "Active Balance" control loop to ensure measurement linearity regardless of inlet restriction.
+
+* **Primary Loop (Flow Control):** The Exhaust (Pull) fan is set to a specific PWM or RPM to achieve the target flow rate.
+* **Secondary Loop (Pressure Balance):** A dedicated SDP810 sensor monitors the static pressure difference between the Venturi inlet and the ambient room.
+* **Active Compensation:** A PID controller adjusts the Inlet (Push) fan in real-time. If a restrictive valve causes a pressure drop, the Push fan increases power until the internal static pressure returns to 0.0 Pa (Atmospheric Neutral).
+
+**Result:** The Venturi operates in a "Stagnation-Free" zone, eliminating the "Negative Delta-P" phenomenon and ensuring laboratory-grade accuracy even at >90% valve restriction.
+
+---
+
+## 5. Calibration Physics
 
 The reference flow $Q$ is calculated using the ISO 5167 standard principles, corrected for the actual air density at the time of measurement.
 
@@ -71,7 +86,7 @@ $$\text{Reference } Q = 3600 \cdot C_d \cdot A_{throat} \cdot \sqrt{\frac{2 \cdo
 
 ---
 
-## 5. Usage: Calibrating the Flow Meter
+## 6. Usage: Calibrating the Flow Meter
 
 This rig is designed to be used in conjunction with the **Zero-Pressure Airflow Meter** interactive calibration modes.
 
@@ -91,7 +106,7 @@ The reference flow of this Test Bench is validated against a calibrated Testo 42
 
 ---
 
-## 6. Manufacturing Notes
+## 7. Manufacturing Notes
 
 * **Material:** PETG (0.2mm layer height).
 * **Assembly:** Parts are flanged for easy airtight coupling. The Venturi sections are bonded with epoxy to prevent leaks at the pressure rings.
