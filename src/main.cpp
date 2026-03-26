@@ -17,11 +17,11 @@
 #include "main.h"
 
 // Pin definitions
-const int FAN_ON_PIN  = 14;
+const int FAN_ON_PIN  = 32;
 const int FAN_PULL_PWM_PIN = 27;
-const int FAN_PUSH_PWM_PIN = 12;
-const int FAN_PULL_TACHO_PIN = 23;
-const int FAN_PUSH_TACHO_PIN = 13;
+const int FAN_PUSH_PWM_PIN = 14;
+const int FAN_PULL_TACHO_PIN = 34;
+const int FAN_PUSH_TACHO_PIN = 35;
 
 //I2C pin definitions
 const int I2C_SDA0_PIN = 21;
@@ -47,8 +47,7 @@ const int PWM_FREQ = 25000;    // 25 kHz frequency for computer fans
 const int PWM_RESOLUTION = 10; // 10-bit resolution (0-1023)
 
 // tachometer
-volatile uint32_t tachoPullFanPulseCycles = 300;
-volatile uint32_t tachoPushFanPulseCycles = 300;
+volatile uint32_t tachoFanPulseCycles = 300;
 volatile uint32_t tachoPushFanPulseCount = 0;
 volatile uint32_t tachoPullFanPulseCount = 0;
 volatile uint32_t tachoPullFanRPM = 0;
@@ -100,55 +99,225 @@ Adafruit_BME280  bme280;     // I2C
 hw_timer_t *timer0 = nullptr;
 volatile bool ms10_passed = false;
 
+FollowFanType followFanType = FOLLOW_PULL_FAN;
 ModeType modeType = MT_SPEED;
-bool direction = false; // false for return
+PidTuneType pidTuneType = PID_TUNE_NONE;
+OperationMode operationMode = OM_SPEED_PULL_FAN;
 
 // setup PID controllers
 // Define Variables we'll be connecting to
-double pidSetpointFlow, pidInputFlow, pidOutputFlow;
+double setpointPidFlow, inputPidFlow, outputPidFlow;
 // Specify the links and initial tuning parameters
 double KpFlow=6, KiFlow=3, KdFlow=0;
-PID pid(&pidInputFlow, &pidOutputFlow, &pidSetpointFlow, KpFlow, KiFlow, KdFlow, REVERSE);
-
-double pidSetpointBalance, pidInputBalance, pidOutputBalance;
+PID pidFlow(&inputPidFlow, &outputPidFlow, &setpointPidFlow, KpFlow, KiFlow, KdFlow, DIRECT);
+double setpointPidBalance, inputPidBalance, outputPidBalance;
 double KpBalance=6, KiBalance=3, KdBalance=0;
-PID pidBalance(&pidInputBalance, &pidOutputBalance, &pidSetpointBalance, KpBalance, KiBalance, KdBalance, REVERSE);
+PID pidBalance(&inputPidBalance, &outputPidBalance, &setpointPidBalance, KpBalance, KiBalance, KdBalance, DIRECT);
 
 const float flowFactor = 620.21; // obsolete
 float Cf = Cd * flowFactor; // obsolete
-float offsetVenturiPressure;
 float rho = 1.2; // densitity of air at 1013,25 hPa, 20 C, and 60 %Rh (Kg/m3)
 
+float offsetVenturiPressure = 0.0;
 float offsetBalancePressure = 0.0;
 
+static void  loadPreferences();
+static void  setupRotaryEncoder();
+static void  setPullFanSpeed(uint32_t speed);
+static void  setPushFanSpeed(uint32_t speed);
+static void  setMasterFan(FollowFanType type);
+static void  setMasterFanSpeed(uint32_t speed);
+static void  setSlaveFanSpeed(uint32_t speed);
+static void  setupTachometer();
+static void  setupTimer0();
 static void  initDisplay(void);
+static void  readPressureSensors();
+static void  loopRotaryEncoder();
 static void  displayMeasurements();
 static void  displaySelectMode(ModeType);
+static void  displaySelectOperationMode(OperationMode mode);
 static void  displayTextNumber(const char *txt, float);
 static void  displayAdjustSensorOffsets(const char *sensor);
 static void  displayAdjustSensorOffsetsProgress(int16_t progress);
+static void  displaySelectTunePID(PidTuneType type);
 static void  initBME280();
 static void  initSDP(SensirionI2CSdp&, TwoWire&);
 static float calculateFlowCompensated(float dP);
 static void  drawString(int16_t x, int16_t y, const String &text);
 static float getFlow(float dP);
 static void  setRho(float tempC, float absPressurePa, float humidityPct);
+//////////////////////////////////////////////////////////////////////////
 
+void setup() {
+
+  Serial.begin(115200);
+
+  Serial.println("\ntestbench_airflowmeter is starting up...");
+
+  // prefent fan from starting up
+  pinMode(FAN_ON_PIN, OUTPUT);
+  digitalWrite(FAN_ON_PIN, LOW);
+
+  setupTachometer();
+
+  // load preferences (calibration and PID parameters)
+  loadPreferences();
+
+  // setup RotaryEncoder
+  setupRotaryEncoder();
+
+  // configure PWM
+  Serial.println("Setup PWM");
+  ledcSetup(PWM_PULL_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(FAN_PULL_PWM_PIN, PWM_PULL_FAN_CHAN);
+  ledcSetup(PWM_PUSH_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(FAN_PUSH_PWM_PIN, PWM_PUSH_FAN_CHAN);
+ 
+  // set initial fan speeds to zero
+  setMasterFanSpeed(0);
+  setSlaveFanSpeed(0);
+  delay(1000);
+
+  // Start both busses
+  I2C_A.begin(I2C_SDA0_PIN, I2C_SCL0_PIN, 700000);   // SDA, SCL
+  I2C_B.begin(I2C_SDA1_PIN, I2C_SCL1_PIN, 100000);
+
+  Serial.println("Setup Display");
+  initDisplay();
+  delay(500);
+  Serial.println("Setup BME280");
+  initBME280();
+  delay(500);
+  Serial.println("Setup SDP810 Venturi");
+  initSDP(sdpVenturi, I2C_A);
+  delay(500);
+  Serial.println("Setup SDP810 Balance");
+  initSDP(sdpBalance, I2C_B);
+  delay(500);
+
+  Serial.println("setup smoothed average.");
+  flow.begin(SMOOTHED_AVERAGE, 50);
+  balancePressure.begin(SMOOTHED_AVERAGE, 100);
+  venturiPressure.begin(SMOOTHED_AVERAGE, 100);
+  calibration.begin(SMOOTHED_AVERAGE, 200);
+  pressureAbsolute.begin(SMOOTHED_AVERAGE, 40);
+  humidityAmbient.begin(SMOOTHED_AVERAGE, 40);
+  temperatureAmbient.begin(SMOOTHED_AVERAGE, 40);
+  delay(500);
+
+  // initialize the Flow PID variables
+  pidFlow.SetTunings(KpFlow, KiFlow, KdFlow);
+  setpointPidFlow = 0.0;
+  inputPidFlow = 0.0;
+  Serial.println("turn the PID Flow on.");
+  pidFlow.SetMode(AUTOMATIC);
+  pidFlow.SetOutputLimits(0, 1023);
+  pidFlow.SetControllerDirection(DIRECT);
+  delay(500);
+
+  // initialize the Balance PID variables
+  pidBalance.SetTunings(KpBalance, KiBalance, KdBalance);
+  setpointPidBalance = 0.0;
+  inputPidBalance = 0.0;
+  Serial.println("turn the PID Balance on.");
+  pidBalance.SetMode(AUTOMATIC);
+  pidBalance.SetOutputLimits(0, 1023);
+  pidBalance.SetControllerDirection(DIRECT);
+  delay(500);
+
+  Serial.print("Setup timer interrupt\n");
+  setupTimer0();
+  delay(500);
+
+  Serial.print("\n Setup done...\n\n");
+  delay(500);
+}
+//////////////////////////////////////////////////////////////////////////
+
+void loop() {
+  static uint32_t loopcnt = 0;
+  static uint32_t last_millis = 0;
+  uint32_t ms = millis();
+  
+  readPressureSensors();
+
+  loopRotaryEncoder();
+
+  // every 100ms
+  if (ms >= last_millis + 100) {
+    last_millis = ms;
+
+    readPressureSensors();
+
+    flow.add(getFlow(venturiPressure.get()));
+
+    // Compute PID for balance pressure
+    inputPidBalance = balancePressure.get();    
+    pidBalance.Compute();
+    setSlaveFanSpeed(outputPidBalance); // Apply PWM to fan
+
+    switch (modeType) {
+      
+      case MT_SPEED:
+        setMasterFanSpeed(numberSelector.getValue() * 10.23);
+        break;
+
+      case MT_FLOW:
+      case MT_CAL_FLOW:
+      case MT_TUNE_PID_FLOW:
+        inputPidFlow = flow.get();
+        pidFlow.Compute();
+        setMasterFanSpeed(outputPidFlow);
+        break;
+    }
+    readPressureSensors();
+    
+    // every second
+    if (loopcnt % 10 == 0) {
+
+      // Only needed in forced mode! In normal mode, you can remove the next line.
+      bme280.takeForcedMeasurement(); // has no effect in normal mode
+      readPressureSensors();
+
+      // get the measurements from the BME280
+      pressureAbsolute.add(bme280.readPressure() / 100.0); // convert from Pa to hPa
+      readPressureSensors();
+      temperatureAmbient.add(bme280.readTemperature());
+      readPressureSensors();
+      humidityAmbient.add(bme280.readHumidity());
+      readPressureSensors();
+
+      Serial.printf("Flow pressure: %.3f Pa\n", venturiPressure.get());
+      Serial.printf("PWM fan dutycycle: %.1f%%\n", outputPidFlow / 10.23);
+    }
+
+    // every minute
+    if (loopcnt % 600 == 0) {
+       setRho(temperatureAmbient.get(), pressureAbsolute.get() * 100.0,humidityAmbient.get());
+    }
+    
+    // every 2 seconds
+    if (loopcnt % 20 == 0) {
+      if (modeType != MT_SELECT) {
+        displayMeasurements(); // 42ms
+      }
+    }
+
+    ++loopcnt;
+  }
+}
 //////////////////////////////////////////////////////////////////////////
 
 // Interrupt Service Routine (ISR)
 // IRAM_ATTR places the function in RAM for faster execution
 void IRAM_ATTR Timer0_ISR() {
   ms10_passed = true;
-  if (--tachoPullFanPulseCycles == 0) {
+  if (--tachoFanPulseCycles == 0) {
     tachoPullFanRPM = tachoPullFanPulseCount * 10;
     tachoPullFanPulseCount = 0;
-    tachoPullFanPulseCycles = 300;
-  }
-  if (--tachoPushFanPulseCycles == 0) {
     tachoPushFanRPM = tachoPushFanPulseCount * 10;
     tachoPushFanPulseCount = 0;
-    tachoPushFanPulseCycles = 300;
+    tachoFanPulseCycles = 300;
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -173,7 +342,15 @@ void IRAM_ATTR tachoPushFanPulseCount_ISR() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void setupTimer0() {
+static void setupTachometer() {
+  pinMode(FAN_PULL_TACHO_PIN, INPUT_PULLUP); // GPIO 12
+  attachInterrupt(digitalPinToInterrupt(FAN_PULL_TACHO_PIN), tachoPullFanPulseCount_ISR, FALLING);
+  pinMode(FAN_PUSH_TACHO_PIN, INPUT_PULLUP); // GPIO 13
+  attachInterrupt(digitalPinToInterrupt(FAN_PUSH_TACHO_PIN), tachoPushFanPulseCount_ISR, FALLING);
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void setupTimer0() {
   // 1. Initialize timer
   //timerBegin(timer_number, divider, countUp)
   // Prescaler 80: 80MHz / 80 = 1MHz (1 microsecond per tick)
@@ -191,7 +368,7 @@ void setupTimer0() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-float getFloat(const char* key, float value = NAN) {
+static float getFloat(const char* key, float value = NAN) {
   float f;
   preferences.begin("testbench", false);
   f = preferences.getFloat(key, value);
@@ -200,30 +377,35 @@ float getFloat(const char* key, float value = NAN) {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void saveFloat(const char* key, float value) {
+static void saveFloat(const char* key, float value) {
   preferences.begin("testbench", false);
   preferences.putFloat(key, value);
   preferences.end();
 }
 //////////////////////////////////////////////////////////////////////////
 
-void initCf() {
-  Cd = getFloat("Cd", 0.975);
+static void loadPreferences() {
+  preferences.begin("testbench", true);
+
+  Cd = preferences.getFloat("Cd", 0.975);
   if (Cd >= 0.9 && Cd <= 1.0) {
     Cf = flowFactor * Cd;
   }
-}
-//////////////////////////////////////////////////////////////////////////
 
-void loadPreferences() {
-  preferences.begin("testbench", true);
   offsetBalancePressure = preferences.getFloat("offsetBalance", 0.0);
   offsetVenturiPressure = preferences.getFloat("offsetVenturi", 0.0);
+  KpFlow =  preferences.getFloat("KpFlow", KpFlow);
+  KiFlow =  preferences.getFloat("KiFlow", KiFlow);
+  KdFlow =  preferences.getFloat("KdFlow", KdFlow);
+  KpBalance = preferences.getFloat("KpBalance", KpBalance);
+  KiBalance = preferences.getFloat("KiBalance", KiBalance);
+  KdBalance = preferences.getFloat("KdBalance", KdBalance);
+
   preferences.end();
 }
 //////////////////////////////////////////////////////////////////////////
 
-void setupRotaryEncoder() {
+static void setupRotaryEncoder() {
   rotaryEncoder->begin();
   rotaryEncoder->setup(&readEncoder_ISR, &readButton_ISR);
   numberSelector.attachEncoder(rotaryEncoder);
@@ -239,37 +421,67 @@ void setupRotaryEncoder() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void setPullFanSpeed(uint32_t speed) {
+static void setPullFanSpeed(uint32_t speed) {
   static uint32_t lastspeed = 0xFFFFFFFF;
 
   if (lastspeed != speed) {
     ledcWrite(PWM_PULL_FAN_CHAN, speed);
-    if (speed == 0) {
-      digitalWrite(FAN_ON_PIN, LOW);
-    } else if (lastspeed == 0) {
-      digitalWrite(FAN_ON_PIN, HIGH);
+    if (followFanType == FOLLOW_PULL_FAN) {
+      if (speed == 0) {
+        digitalWrite(FAN_ON_PIN, LOW);
+      } else if (lastspeed == 0) {
+        digitalWrite(FAN_ON_PIN, HIGH);
+      }
     }
     lastspeed = speed;
  }
 } 
 //////////////////////////////////////////////////////////////////////////
 
-void setPushFanSpeed(uint32_t speed) {
+static void setPushFanSpeed(uint32_t speed) {
   static uint32_t lastspeed = 0xFFFFFFFF;
 
   if (lastspeed != speed) {
     ledcWrite(PWM_PUSH_FAN_CHAN, speed);
-    if (speed == 0) {
-      digitalWrite(FAN_ON_PIN, LOW);
-    } else if (lastspeed == 0) {
-      digitalWrite(FAN_ON_PIN, HIGH);
+    if (followFanType == FOLLOW_PUSH_FAN) {
+      if (speed == 0) {
+        digitalWrite(FAN_ON_PIN, LOW);
+      } else if (lastspeed == 0) {
+        digitalWrite(FAN_ON_PIN, HIGH);
+      }
     }
     lastspeed = speed;
  }
 } 
 //////////////////////////////////////////////////////////////////////////
 
-void adjustSensorOffsetVenturiPressure() {
+static void setMasterFanSpeed(uint32_t speed) {
+  if (followFanType == FOLLOW_PULL_FAN) {
+    setPullFanSpeed(speed);
+  } else {
+    setPushFanSpeed(speed);
+  }
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void setSlaveFanSpeed(uint32_t speed) {
+  if (followFanType == FOLLOW_PULL_FAN) {
+    setPushFanSpeed(speed);
+  } else {
+    setPullFanSpeed(speed);
+  }
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void  setMasterFan(FollowFanType type) {
+  if (followFanType != type) {
+    followFanType = type;
+    pidBalance.SetControllerDirection(type == FOLLOW_PULL_FAN ? DIRECT : REVERSE);
+  }
+}
+//////////////////////////////////////////////////////////////////////////  
+
+static void adjustSensorOffsetVenturiPressure() {
   Serial.println("Adjusting offset venturi pressure sensor."); 
   for (size_t i = 0; i < 200; i++) {
     float differentialPressure;
@@ -293,7 +505,7 @@ void adjustSensorOffsetVenturiPressure() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void adjustSensorOffsetBalancePressure() {
+static void adjustSensorOffsetBalancePressure() {
   Serial.println("Adjusting offset balance pressure sensor."); 
   for (size_t i = 0; i < 200; i++) {
     float differentialPressure;
@@ -317,103 +529,15 @@ void adjustSensorOffsetBalancePressure() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void adjustSensorOffsets() {
-  displayAdjustSensorOffsets("Balance");
-  adjustSensorOffsetBalancePressure();
+static void adjustSensorOffsets() {
   displayAdjustSensorOffsets("Venturi");
   adjustSensorOffsetVenturiPressure();
+  displayAdjustSensorOffsets("Balance");
+  adjustSensorOffsetBalancePressure();
 }
 //////////////////////////////////////////////////////////////////////////
 
-void setup() {
-  
-  // prefent fan from starting up
-  pinMode(FAN_ON_PIN, OUTPUT);
-  digitalWrite(FAN_ON_PIN, LOW);
-
-  pinMode(FAN_PULL_TACHO_PIN, INPUT_PULLUP); // GPIO 23
-  attachInterrupt(digitalPinToInterrupt(FAN_PULL_TACHO_PIN), tachoPullFanPulseCount_ISR, FALLING);
-  pinMode(FAN_PUSH_TACHO_PIN, INPUT_PULLUP); // GPIO 13
-  attachInterrupt(digitalPinToInterrupt(FAN_PUSH_TACHO_PIN), tachoPushFanPulseCount_ISR, FALLING);
-
-  Serial.begin(115200);
-
-  Serial.println("\ntestbench_airflowmeter is starting up...");
-
-  // set Cf
-  initCf();
-  loadPreferences();
-
-  // setup RotaryEncoder
-  setupRotaryEncoder();
-
-  // Configure PWM
-  Serial.println("Setup PWM");
-  ledcSetup(PWM_PULL_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(FAN_PULL_PWM_PIN, PWM_PULL_FAN_CHAN);
-  ledcSetup(PWM_PUSH_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(FAN_PUSH_PWM_PIN, PWM_PUSH_FAN_CHAN);
- 
-  // Set initial fan speed to zero
-  setPullFanSpeed(0);
-  delay(1000);
-
-  analogReadResolution(12);
-
-  // Start both busses
-  I2C_A.begin(I2C_SDA0_PIN, I2C_SCL0_PIN, 700000);   // SDA, SCL
-  I2C_B.begin(I2C_SDA1_PIN, I2C_SCL1_PIN, 100000);
-
-  Serial.println("Setup Display");
-  initDisplay();
-  delay(500);
-  Serial.println("Setup BME280");
-  initBME280();
-  delay(500);
-  Serial.println("Setup SDP810 Balance");
-  initSDP(sdpBalance, I2C_A);
-  delay(500);
-  Serial.println("Setup SDP810 Venturi");
-  initSDP(sdpVenturi, I2C_B);
-  delay(500);
-  
-
-  Serial.println("setup smoothed average.");
-  flow.begin(SMOOTHED_AVERAGE, 50);
-  balancePressure.begin(SMOOTHED_AVERAGE, 100);
-  venturiPressure.begin(SMOOTHED_AVERAGE, 100);
-  calibration.begin(SMOOTHED_AVERAGE, 200);
-  pressureAbsolute.begin(SMOOTHED_AVERAGE, 40);
-  humidityAmbient.begin(SMOOTHED_AVERAGE, 40);
-  temperatureAmbient.begin(SMOOTHED_AVERAGE, 40);
-  delay(500);
-
-  // initialize the PID variables
-  KpFlow = getFloat("Kp", KpFlow);
-  KiFlow = getFloat("Ki", KiFlow);
-  KdFlow = getFloat("Kd", KdFlow);
-  pid.SetTunings(KpFlow, KiFlow, KdFlow);
-  pidSetpointFlow = 0.0;
-  pidInputFlow = 0.0;
-
-  // turn the PID on
-  Serial.println("turn the PID on.");
-  pid.SetMode(AUTOMATIC);
-  pid.SetOutputLimits(0, 1023);
-  pid.SetControllerDirection(direction ? REVERSE : DIRECT);
-  
-  delay(500);
-
-  Serial.print("Setup timer interrupt\n");
-  setupTimer0();
-  delay(500);
-
-  Serial.print("\n Setup done...\n\n");
-  delay(500);
-}
-//////////////////////////////////////////////////////////////////////////
-
-void initNextMode(ModeType type) {
+static void initNextMode(ModeType type) {
   modeType = type;
 
   switch (type) {
@@ -424,13 +548,13 @@ void initNextMode(ModeType type) {
     case MT_SPEED:
       numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
       numberSelector.setValue(10.0);
-      setPullFanSpeed(102); // 10%
+      setMasterFanSpeed(102); // 10%
       break;
 
     case MT_FLOW:
       numberSelector.setRange(10.0, 200.0, 0.1, false, 1); // 0 - 200 (m3/h)
-      pidSetpointFlow = 10.0;
-      numberSelector.setValue(pidSetpointFlow);
+      setpointPidFlow = 10.0;
+      numberSelector.setValue(setpointPidFlow);
       break;
 
     case MT_POWER:
@@ -443,25 +567,24 @@ void initNextMode(ModeType type) {
       numberSelector.setValue(Cd);
       break;
 
-    case MT_PID_TUNE_P:
-      numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
-      numberSelector.setValue(KpFlow);
+    case MT_TUNE_PID_FLOW:
+    case MT_TUNE_PID_BALANCE:
+      pidTuneType = PID_TUNE_NONE;
+      numberSelector.setRange(0, 3, 1, true, 0);
+      numberSelector.setValue(PID_TUNE_NONE);
+      displaySelectTunePID(PID_TUNE_NONE);
       break;
 
-    case MT_PID_TUNE_I:
-      numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
-      numberSelector.setValue(KiFlow);
-      break;
-
-    case MT_PID_TUNE_D:
-      numberSelector.setRange(0.0, 10.0, 0.01, false, 2);
-      numberSelector.setValue(KdFlow);
+    case MT_ADJUST_OFFSET:
+      adjustSensorOffsets();
+      modeType = MT_SPEED;
+      displayMeasurements();
       break;
   }
 }
 //////////////////////////////////////////////////////////////////////////
 
-void on_button_short_click() {
+static void on_button_short_click() {
   // pidSetpoint = compensationFactorB = numberSelector.getValue();
   // compensationFactorA = flow.get();
   switch (modeType) {
@@ -477,29 +600,97 @@ void on_button_short_click() {
     case MT_CAL_FLOW:
       Cd = numberSelector.getValue();
       saveFloat("Cd", Cd);
-      initCf(); // obsolete
       initNextMode(MT_SPEED);
       break;
     
-    case MT_PID_TUNE_P:
-      saveFloat("Kp", numberSelector.getValue());
-      initNextMode(MT_FLOW);
+    case MT_TUNE_PID_FLOW:
+      switch (pidTuneType) {
+        case PID_TUNE_NONE:
+          switch((PidTuneType)(uint8_t)numberSelector.getValue()) {
+            case PID_TUNE_NONE:
+              initNextMode(MT_SELECT);
+              break;
+            case PID_TUNE_P:
+              pidTuneType = PID_TUNE_P;
+              numberSelector.setRange(0, 20, 0.1, false, 1);
+              numberSelector.setValue(KpFlow);
+              displayMeasurements();
+              break;
+            case PID_TUNE_I:
+              pidTuneType = PID_TUNE_I;
+              numberSelector.setRange(0, 10, 0.1, false, 1);
+              numberSelector.setValue(KiFlow);
+              displayMeasurements();
+              break;
+            case PID_TUNE_D:
+              pidTuneType = PID_TUNE_D;
+              numberSelector.setRange(0, 10, 0.1, false, 1);
+              numberSelector.setValue(KdFlow);
+              displayMeasurements();
+              break;
+          }
+          break;
+        case PID_TUNE_P:
+          saveFloat("KpFlow", numberSelector.getValue());
+          initNextMode(MT_TUNE_PID_FLOW);
+          break;
+        case PID_TUNE_I:
+          saveFloat("KiFlow", numberSelector.getValue());
+          initNextMode(MT_TUNE_PID_FLOW);
+          break;  
+        case PID_TUNE_D:
+          saveFloat("KdFlow", numberSelector.getValue());
+          initNextMode(MT_TUNE_PID_FLOW);
+          break; 
+      }
       break;
-
-    case MT_PID_TUNE_I:
-      saveFloat("Ki", numberSelector.getValue());
-      initNextMode(MT_FLOW);
+    
+    case MT_TUNE_PID_BALANCE:
+      switch (pidTuneType) {
+        case PID_TUNE_NONE:
+          switch((PidTuneType)(uint8_t)numberSelector.getValue()) {
+            case PID_TUNE_NONE:
+              initNextMode(MT_SELECT);
+              break;
+            case PID_TUNE_P:
+              pidTuneType = PID_TUNE_P;
+              numberSelector.setRange(0, 20, 0.1, false, 1);
+              numberSelector.setValue(KpBalance);
+              displayMeasurements();
+              break;
+            case PID_TUNE_I:
+              pidTuneType = PID_TUNE_I;
+              numberSelector.setRange(0, 10, 0.1, false, 1);
+              numberSelector.setValue(KiBalance);
+              displayMeasurements();
+              break;
+            case PID_TUNE_D:
+              pidTuneType = PID_TUNE_D;
+              numberSelector.setRange(0, 10, 0.1, false, 1);
+              numberSelector.setValue(KdBalance);
+              displayMeasurements();
+              break;
+          }
+          break;
+        case PID_TUNE_P:
+          saveFloat("KpBalance", numberSelector.getValue());
+          initNextMode(MT_TUNE_PID_BALANCE);
+          break;
+        case PID_TUNE_I:
+          saveFloat("KiBalance", numberSelector.getValue());
+          initNextMode(MT_TUNE_PID_BALANCE);
+          break; 
+        case PID_TUNE_D:
+          saveFloat("KdBalance", numberSelector.getValue());
+          initNextMode(MT_TUNE_PID_BALANCE);
+          break;
+      }
       break;
-      
-    case MT_PID_TUNE_D:
-      saveFloat("Kd", numberSelector.getValue());
-      initNextMode(MT_FLOW);
-      break;  
   }
 }
 //////////////////////////////////////////////////////////////////////////
 
-void on_button_long_click() {
+static void on_button_long_click() {
   // toggle direction
   // direction = !direction;
   // myPID.SetControllerDirection(direction ?  REVERSE : DIRECT);
@@ -519,7 +710,7 @@ void on_button_long_click() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void handle_rotary_button() {
+static void handle_rotary_button() {
   static unsigned long lastTimeButtonDown = 0;
   static bool wasButtonDown = false;
 
@@ -544,7 +735,7 @@ void handle_rotary_button() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void loopRotaryEncoder() {
+static void loopRotaryEncoder() {
   
   if (rotaryEncoder->encoderChanged()) {
     switch (modeType) {
@@ -554,18 +745,18 @@ void loopRotaryEncoder() {
         break;
 
       case MT_SPEED:
-        setPullFanSpeed(numberSelector.getValue()* 10.23);
+        setMasterFanSpeed(numberSelector.getValue()* 10.23);
         displayTextNumber("Sf %.1f%%", numberSelector.getValue());
         break;
 
       case MT_FLOW:
-        pidSetpointFlow = numberSelector.getValue();
-        displayTextNumber("flow %.1fm3/s", pidSetpointFlow);
+        setpointPidFlow = numberSelector.getValue();
+        displayTextNumber("flow %.1fm3/s", setpointPidFlow);
         break;
 
       case MT_POWER:
-        pidSetpointFlow = numberSelector.getValue();
-        displayTextNumber("Pf %.1f%%", pidSetpointFlow);
+        setpointPidFlow = numberSelector.getValue();
+        displayTextNumber("Pf %.1f%%", setpointPidFlow);
         break;
 
       case MT_CAL_FLOW:
@@ -573,22 +764,57 @@ void loopRotaryEncoder() {
         displayTextNumber("Cd %.3f", Cd);
         break;
 
-      case MT_PID_TUNE_P:
-        KpFlow = numberSelector.getValue();
-        pid.SetTunings(KpFlow, KiFlow, KdFlow);
-        displayTextNumber("Kp %.2f", KpFlow);
-        break;
+      case MT_TUNE_PID_FLOW:
+        switch (pidTuneType) {
 
-      case MT_PID_TUNE_I:
-        KiFlow = numberSelector.getValue();
-        pid.SetTunings(KpFlow, KiFlow, KdFlow);
-        displayTextNumber("Ki %.2f", KiFlow);
+          case PID_TUNE_NONE:
+            displaySelectTunePID((PidTuneType)(uint8_t)numberSelector.getValue());
+            break;
+
+          case PID_TUNE_P:
+            KpFlow = numberSelector.getValue();
+            pidFlow.SetTunings(KpFlow, KiFlow, KdFlow);
+            displayTextNumber("Kp: %.2f", KpFlow);
+            break;
+
+          case PID_TUNE_I:
+            KiFlow = numberSelector.getValue();
+            pidFlow.SetTunings(KpFlow, KiFlow, KdFlow);
+            displayTextNumber("Ki: %.2f", KiFlow);
+            break;
+          
+          case PID_TUNE_D:
+            KdFlow = numberSelector.getValue();
+            pidFlow.SetTunings(KpFlow, KiFlow, KdFlow);
+            displayTextNumber("Kd: %.2f", KdFlow);
+            break;
+        } 
         break;
-      
-      case MT_PID_TUNE_D:
-        KdFlow = numberSelector.getValue();
-        pid.SetTunings(KpFlow, KiFlow, KdFlow);
-        displayTextNumber("Kd %.2f", KdFlow);
+      case MT_TUNE_PID_BALANCE:
+        switch (pidTuneType) {
+
+          case PID_TUNE_NONE:
+            displaySelectTunePID((PidTuneType)(uint8_t)numberSelector.getValue());
+            break;
+
+          case PID_TUNE_P:
+            KpBalance = numberSelector.getValue();
+            pidBalance.SetTunings(KpBalance, KiBalance, KdBalance);
+            displayTextNumber("Kp: %.2f", KpBalance);
+            break;
+
+          case PID_TUNE_I:
+            KiBalance = numberSelector.getValue();
+            pidBalance.SetTunings(KpBalance, KiBalance, KdBalance);
+            displayTextNumber("Ki: %.2f", KiBalance);
+            break;
+          
+          case PID_TUNE_D:
+            KdBalance = numberSelector.getValue();
+            pidBalance.SetTunings(KpBalance, KiBalance, KdBalance);
+            displayTextNumber("Kd: %.2f", KdBalance);
+            break;
+        } 
         break;
     }
   } 
@@ -596,7 +822,7 @@ void loopRotaryEncoder() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-void readPressureSensors() {
+static void readPressureSensors() {
   
   if (ms10_passed == true) {
     ms10_passed = false;
@@ -606,89 +832,23 @@ void readPressureSensors() {
     uint16_t error = sdpVenturi.readMeasurement(differentialPressure, temperature);
     if (error) {
       Serial.print("Error trying to execute readMeasurement from Venturi Pressure sensor");
+      venturiPressure.add(0.0);
     } else {
       venturiPressure.add(differentialPressure - offsetVenturiPressure);
     }
+
+    error = sdpBalance.readMeasurement(differentialPressure, temperature);
+    if (error) {
+      Serial.print("Error trying to execute readMeasurement from Balance Pressure sensor");
+      balancePressure.add(0.0);
+    } else {
+      balancePressure.add(differentialPressure - offsetBalancePressure);
+    }
   }
 }
 //////////////////////////////////////////////////////////////////////////
 
-void loop() {
-  static uint32_t loopcnt = 0;
-  static uint32_t last_millis = 0;
-  uint32_t ms = millis();
-  
-  readPressureSensors();
-
-  loopRotaryEncoder();
-
-  // every 100ms
-  if (ms >= last_millis + 100) {
-    last_millis = ms;
-
-    readPressureSensors();
-
-    flow.add(getFlow(venturiPressure.get()));
-
-    // Compute PID for balance pressure
-    pidInputBalance = balancePressure.get();    
-    pid.Compute();
-    setPushFanSpeed(pidOutputBalance); // Apply PWM to fan
-
-    switch (modeType) {
-      
-      case MT_SPEED:
-        setPullFanSpeed(numberSelector.getValue() * 10.23);
-        break;
-
-      case MT_FLOW:
-      case MT_PID_TUNE_P:
-      case MT_PID_TUNE_I:
-      case MT_PID_TUNE_D:
-        pidInputFlow = flow.get();
-        pid.Compute();
-        setPullFanSpeed(pidOutputFlow);
-        break;
-    }
-    readPressureSensors();
-    
-    // every second
-    if (loopcnt % 10 == 0) {
-
-      // Only needed in forced mode! In normal mode, you can remove the next line.
-      bme280.takeForcedMeasurement(); // has no effect in normal mode
-      readPressureSensors();
-
-      // get the measurements from the BME280
-      pressureAbsolute.add(bme280.readPressure() / 100.0); // convert from Pa to hPa
-      readPressureSensors();
-      temperatureAmbient.add(bme280.readTemperature());
-      readPressureSensors();
-      humidityAmbient.add(bme280.readHumidity());
-      readPressureSensors();
-
-      Serial.printf("Flow pressure: %.1f Pa\n", venturiPressure.get());
-      Serial.printf("PWM fan dutycycle: %.1f%%\n", pidOutputFlow / 10.23);
-    }
-
-    // every minute
-    if (loopcnt % 600 == 0) {
-       setRho(temperatureAmbient.get(), pressureAbsolute.get() * 100.0,humidityAmbient.get());
-    }
-    
-    // every 2 seconds
-    if (loopcnt % 20 == 0) {
-      if (modeType != MT_SELECT) {
-        displayMeasurements(); // 42ms
-      }
-    }
-
-    ++loopcnt;
-  }
-}
-//////////////////////////////////////////////////////////////////////////
-
-void initBME280(void) {
+static void initBME280(void) {
   
   if (bme280.begin(I2C_ADDRESS_BME280, &I2C_A)) {
 
@@ -898,15 +1058,28 @@ static void displayMeasurements() {
   } else if (modeType == MT_CAL_FLOW) {
     // display discharge coefficient venturi
     display.printf("Cd: %.3f", numberSelector.getValue());
-  } else if (modeType == MT_PID_TUNE_P) {
-    // display proportional gain PID controller
-    display.printf("Kp %.2f", numberSelector.getValue());
-  } else if (modeType == MT_PID_TUNE_I) {
-    // display integral gain PID controller
-    display.printf("Ki %.2f", numberSelector.getValue());
-  } else if (modeType == MT_PID_TUNE_D) {
-    // display derivative gain PID controller
-    display.printf("Kd %.2f", numberSelector.getValue());     
+  } else if (modeType == MT_TUNE_PID_FLOW) {
+    if (pidTuneType == PID_TUNE_P) {
+      // display proportional gain PID controller
+      display.printf("KpFlow: %.2f", numberSelector.getValue());
+    } else if (pidTuneType == PID_TUNE_I) {
+      // display integral gain PID controller
+      display.printf("KiFlow: %.2f", numberSelector.getValue());
+    } else if (pidTuneType == PID_TUNE_D) {
+      // display derivative gain PID controller
+      display.printf("KdFlow: %.2f", numberSelector.getValue());
+    }
+  } else if (modeType == MT_TUNE_PID_BALANCE) {
+    if (pidTuneType == PID_TUNE_P) {
+      // display proportional gain PID controller
+      display.printf("KpBalance: %.2f", numberSelector.getValue());
+    } else if (pidTuneType == PID_TUNE_I) {
+      // display integral gain PID controller
+      display.printf("KiBalance: %.2f", numberSelector.getValue());
+    } else if (pidTuneType == PID_TUNE_D) {
+      // display derivative gain PID controller
+      display.printf("KdBalance: %.2f", numberSelector.getValue());
+    }     
   }
   readPressureSensors();
 
@@ -973,23 +1146,88 @@ static void displaySelectMode(ModeType mtype) {
   display.print("Calibrate Flow");
   if (mtype == MT_CAL_FLOW) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
-  if (mtype == MT_PID_TUNE_P) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  if (mtype == MT_TUNE_PID_FLOW) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 37);
-  display.print("Tune Kp");
-  if (mtype == MT_PID_TUNE_P) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  display.print("Tune PID Flow");
+  if (mtype == MT_TUNE_PID_FLOW) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
-  if (mtype == MT_PID_TUNE_I) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  if (mtype == MT_TUNE_PID_BALANCE) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 46);
-   display.print("Tune Ki");
-  if (mtype == MT_PID_TUNE_I) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
-  
-  if (mtype == MT_PID_TUNE_D) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.print("Tune PID Balance");
+  if (mtype == MT_TUNE_PID_BALANCE) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mtype == MT_ADJUST_OFFSET) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 55);
-   display.print("Tune Kd");
-  if (mtype == MT_PID_TUNE_D) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  display.print("Adjust Offset");
+  if (mtype == MT_ADJUST_OFFSET) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   display.display();
+}
+//////////////////////////////////////////////////////////////////////////
 
+static void  displaySelectOperationMode(OperationMode mode) {
+  display.clearDisplay();
+  display.setTextSize(1);
+
+  if (mode == OM_SPEED_PULL_FAN) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 0);
+  display.print("Speed Pull Fan");
+  if (mode == OM_SPEED_PULL_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mode == OM_SPEED_PUSH_FAN)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 8);
+  display.print("Speed Push Fan");
+  if (mode == OM_SPEED_PULL_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mode == OM_FLOW_PULL_FAN) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 16);
+  display.print("Flow Pull Fan");
+  if (mode == OM_FLOW_PULL_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mode == OM_FLOW_PUSH_FAN) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 24);
+  display.print("Flow Push Fan");
+  if (mode == OM_FLOW_PUSH_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mode == OM_POWER_PULL_FAN) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 16);
+  display.print("Power Pull Fan");
+  if (mode == OM_POWER_PULL_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mode == OM_POWER_PUSH_FAN) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 24);
+  display.print("Power Push Fan");
+  if (mode == OM_POWER_PUSH_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  display.display();
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void displaySelectTunePID(PidTuneType type) {
+  display.clearDisplay();
+  display.setTextSize(1);
+
+  if (type == PID_TUNE_NONE) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 1);
+  display.print("Back");
+  if (type == PID_TUNE_NONE) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (type == PID_TUNE_P) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 10);
+  display.print("Tune Kp");
+  if (type == PID_TUNE_P) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (type == PID_TUNE_I)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 19);
+  display.print("Tune Ki");
+  if (type == PID_TUNE_I) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (type == PID_TUNE_D) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 28);
+  display.print("Tune Kd");
+  if (type == PID_TUNE_D) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  
+  display.display();
 }
 //////////////////////////////////////////////////////////////////////////
 
