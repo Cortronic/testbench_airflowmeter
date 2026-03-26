@@ -23,7 +23,7 @@ The rig uses an **ESP32-WROOM** to process environmental data and differential p
 
 * **Sensor 1:** SDP810-500PA (Differential pressure across the Venturi).
 * **Sensor 2:** SDP810-125PA (Differential pressure at the inlet of the Venturi).
-* **Sensor 2:** BME280 (Ambient temperature, humidity, and barometric pressure).
+* **Sensor 3:** BME280 (Ambient temperature, humidity, and barometric pressure).
 * **Display:** 1.3" OLED (SH1106) for real-time reference data.
 * **Encoder:** Rotary encode with pushbutton for speedcontrol and menu navigation.
 * **Actuator:** 2 x Arctic S12038-8K High-Static Pressure Fan (12V PWM).
@@ -34,9 +34,9 @@ The rig uses an **ESP32-WROOM** to process environmental data and differential p
 | --- | --- | --- | --- |
 | **I2C Bus 0** | Data / Clock | **21 / 22** | BME280, OLED, SDP800 (Venturi) |
 | **I2C Bus 1** | Data / Clock | **25 / 26** | SDP800 (Zero-Pressure Sensor) |
-| **Encoder** | CLK / DT / SW | **2, 4, 15** | Menu & Calibration |
+| **Encoder** | CLK / DT / SW | **18, 19, 5** | Speed control,  Menu & Calibration |
 | **PWM Pull Fan** | Speed Control | **27** | 25kHz PWM signal |
-| **PWM Push Fan** | Balance Control | **27** | 25kHz PWM signal |
+| **PWM Push Fan** | Balance Control | **14** | 25kHz PWM signal |
 
 ---
 
