@@ -82,7 +82,7 @@ $$\rho = \frac{p_{dry}}{R_d \cdot T} + \frac{p_{vapor}}{R_v \cdot T}$$
 
 $$\text{Reference } Q = 3600 \cdot C_d \cdot A_{throat} \cdot \sqrt{\frac{2 \cdot \Delta P}{\rho \cdot (1 - \beta^4)}}$$
 
-Where the discharge coefficient ($C_d$) is determined during initial rig validation (typically 0.975).
+The discharge coefficient ($C_d$) is determined during initial rig validation (typically 0.975).
 
 ---
 
