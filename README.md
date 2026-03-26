@@ -32,8 +32,8 @@ The rig uses an **ESP32-WROOM** to process environmental data and differential p
 
 | Component | Function | ESP32 GPIO | Notes |
 | --- | --- | --- | --- |
-| **I2C Bus 0** | Data / Clock | **21 / 22** | BME280, OLED, SDP800 (Venturi) |
-| **I2C Bus 1** | Data / Clock | **25 / 26** | SDP800 (Zero-Pressure Sensor) |
+| **I2C Bus 0** | Data / Clock | **21 / 22** | BME280, OLED, SDP810 (Venturi) |
+| **I2C Bus 1** | Data / Clock | **25 / 26** | SDP810 (Balance-Pressure Sensor) |
 | **Encoder** | CLK / DT / SW | **18, 19, 5** | Speed control,  Menu & Calibration |
 | **PWM Pull Fan** | Speed Control | **27** | 25kHz PWM signal |
 | **PWM Push Fan** | Balance Control | **14** | 25kHz PWM signal |
