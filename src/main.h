@@ -2,13 +2,12 @@
 
 typedef enum {
   MT_SELECT = 0,
-  MT_SPEED = 1,
-  MT_FLOW = 2,
-  MT_POWER = 3,
-  MT_CAL_FLOW = 4,
-  MT_TUNE_PID_FLOW = 5,
-  MT_TUNE_PID_BALANCE = 6,
-  MT_ADJUST_OFFSET = 7,
+  MT_SELECT_OPERATION = 1,
+  MT_OPERATION = 2,
+  MT_CAL_FLOW = 3,
+  MT_TUNE_PID_FLOW = 4,
+  MT_TUNE_PID_BALANCE = 5,
+  MT_ADJUST_OFFSETS = 6,
 } ModeType;
 extern ModeType modeType;
 
