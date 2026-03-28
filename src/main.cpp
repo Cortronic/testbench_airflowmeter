@@ -128,6 +128,7 @@ static void  setPushFanSpeed(uint32_t speed);
 static void  setMasterFan(FollowFanType type);
 static void  setMasterFanSpeed(uint32_t speed);
 static void  setSlaveFanSpeed(uint32_t speed);
+static void  setOperationMode(OperationMode mode);
 static void  setupTachometer();
 static void  setupTimer0();
 static void  initDisplay(void);
@@ -491,7 +492,48 @@ static void  setMasterFan(FollowFanType type) {
     pidBalance.SetControllerDirection(type == FOLLOW_PULL_FAN ? DIRECT : REVERSE);
   }
 }
-//////////////////////////////////////////////////////////////////////////  
+//////////////////////////////////////////////////////////////////////////
+
+static void setOperationMode(OperationMode mode) {
+  if (operationMode != mode) {
+    operationMode = mode;
+    switch (mode) {
+      case OM_SPEED_PULL_FAN:
+      case OM_FLOW_PULL_FAN:
+      case OM_POWER_PULL_FAN:
+        setMasterFan(FOLLOW_PULL_FAN);
+        break;
+
+      case OM_SPEED_PUSH_FAN:
+      case OM_FLOW_PUSH_FAN:
+      case OM_POWER_PUSH_FAN:
+        setMasterFan(FOLLOW_PUSH_FAN);
+        break;
+    }
+    switch (mode) {
+      case OM_SPEED_PULL_FAN:
+      case OM_SPEED_PUSH_FAN:
+        numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
+        numberSelector.setValue(10.0);
+        setMasterFanSpeed(102); // 10%
+        break;
+
+      case OM_FLOW_PULL_FAN:
+      case OM_FLOW_PUSH_FAN:
+        numberSelector.setRange(10.0, 200.0, 0.1, false, 1); // 0 - 200 (m3/h)
+        setpointPidFlow = 10.0;
+        numberSelector.setValue(setpointPidFlow);
+        break;
+
+      case OM_POWER_PULL_FAN:
+      case OM_POWER_PUSH_FAN:
+        numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
+        numberSelector.setValue(10.0);
+        break;
+    }
+  }
+}
+//////////////////////////////////////////////////////////////////////////
 
 static void adjustSensorOffsetVenturiPressure() {
   Serial.println("Adjusting offset venturi pressure sensor."); 
@@ -567,27 +609,6 @@ static void initNextMode(ModeType type) {
       break;
     
     case MT_OPERATION:
-      switch(operationMode) {
-        case OM_SPEED_PULL_FAN:
-        case OM_SPEED_PUSH_FAN:
-          numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
-          numberSelector.setValue(10.0);
-          setMasterFanSpeed(102); // 10%
-          break;
-
-        case OM_FLOW_PULL_FAN:
-        case OM_FLOW_PUSH_FAN:
-          numberSelector.setRange(10.0, 200.0, 0.1, false, 1); // 0 - 200 (m3/h)
-          setpointPidFlow = 10.0;
-          numberSelector.setValue(setpointPidFlow);
-          break;
-
-        case OM_POWER_PULL_FAN:
-        case OM_POWER_PUSH_FAN:
-          numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
-          numberSelector.setValue(10.0);
-          break;
-      }
       displayMeasurements();
       break;
 
@@ -622,7 +643,7 @@ static void on_button_short_click() {
       break;
 
     case MT_SELECT_OPERATION:
-      operationMode = (OperationMode)numberSelector.getValue();
+      setOperationMode((OperationMode)numberSelector.getValue());
       initNextMode(MT_OPERATION);
       break;
 
