@@ -120,6 +120,7 @@ float rho = 1.2; // densitity of air at 1013,25 hPa, 20 C, and 60 %Rh (Kg/m3)
 
 float offsetVenturiPressure = 0.0;
 float offsetBalancePressure = 0.0;
+float lastEncoderOperationValue = 0.0;
 
 static void  loadPreferences();
 static void  setupRotaryEncoder();
@@ -129,7 +130,7 @@ static void  setMasterFan(FollowFanType type);
 static void  setMasterFanSpeed(uint32_t speed);
 static void  setSlaveFanSpeed(uint32_t speed);
 static void  setOperationMode(OperationMode mode);
-static void  setupTachometer();
+static void  setupTachometers();
 static void  setupTimer0();
 static void  initDisplay(void);
 static void  readPressureSensors();
@@ -159,7 +160,7 @@ void setup() {
   pinMode(FAN_ON_PIN, OUTPUT);
   digitalWrite(FAN_ON_PIN, LOW);
 
-  setupTachometer();
+  setupTachometers();
 
   // load preferences (calibration and PID parameters)
   loadPreferences();
@@ -198,7 +199,7 @@ void setup() {
 
   Serial.println("setup smoothed average.");
   flow.begin(SMOOTHED_AVERAGE, 50);
-  balancePressure.begin(SMOOTHED_AVERAGE, 100);
+  balancePressure.begin(SMOOTHED_EXPONENTIAL, 2);
   venturiPressure.begin(SMOOTHED_AVERAGE, 100);
   calibration.begin(SMOOTHED_AVERAGE, 200);
   pressureAbsolute.begin(SMOOTHED_AVERAGE, 40);
@@ -257,27 +258,12 @@ void loop() {
     pidBalance.Compute();
     setSlaveFanSpeed(outputPidBalance); // Apply PWM to fan
 
-    switch (modeType) {
-      case MT_OPERATION:
-        switch(operationMode) {
-          case OM_SPEED_PULL_FAN:
-          case OM_SPEED_PUSH_FAN:
-            setMasterFanSpeed(numberSelector.getValue() * 10.23);
-            break;
-          case OM_FLOW_PULL_FAN:
-          case OM_FLOW_PUSH_FAN:
-            inputPidFlow = flow.get();
-            pidFlow.Compute();
-            setMasterFanSpeed(outputPidFlow);
-            break;
-        }
-        break;  
-      case MT_CAL_FLOW:
-      case MT_TUNE_PID_FLOW:
+    if (modeType != MT_ADJUST_OFFSETS) {
+      if (operationMode == OM_FLOW_PULL_FAN || operationMode == OM_FLOW_PUSH_FAN) {
         inputPidFlow = flow.get();
         pidFlow.Compute();
         setMasterFanSpeed(outputPidFlow);
-        break;
+      }
     }
     readPressureSensors();
     
@@ -355,7 +341,7 @@ void IRAM_ATTR tachoPushFanPulseCount_ISR() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-static void setupTachometer() {
+static void setupTachometers() {
   pinMode(FAN_PULL_TACHO_PIN, INPUT_PULLUP); // GPIO 12
   attachInterrupt(digitalPinToInterrupt(FAN_PULL_TACHO_PIN), tachoPullFanPulseCount_ISR, FALLING);
   pinMode(FAN_PUSH_TACHO_PIN, INPUT_PULLUP); // GPIO 13
@@ -445,9 +431,11 @@ static void setPullFanSpeed(uint32_t speed) {
       } else if (lastspeed == 0) {
         digitalWrite(FAN_ON_PIN, HIGH);
       }
+      lastspeed = speed;
+    } else {
+      lastspeed = 0xFFFFFFFF;
     }
-    lastspeed = speed;
- }
+  }
 } 
 //////////////////////////////////////////////////////////////////////////
 
@@ -462,8 +450,10 @@ static void setPushFanSpeed(uint32_t speed) {
       } else if (lastspeed == 0) {
         digitalWrite(FAN_ON_PIN, HIGH);
       }
+      lastspeed = speed;
+    } else {
+      lastspeed = 0xFFFFFFFF;
     }
-    lastspeed = speed;
  }
 } 
 //////////////////////////////////////////////////////////////////////////
@@ -510,27 +500,34 @@ static void setOperationMode(OperationMode mode) {
         setMasterFan(FOLLOW_PUSH_FAN);
         break;
     }
-    switch (mode) {
-      case OM_SPEED_PULL_FAN:
-      case OM_SPEED_PUSH_FAN:
-        numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
-        numberSelector.setValue(10.0);
-        setMasterFanSpeed(102); // 10%
-        break;
 
-      case OM_FLOW_PULL_FAN:
-      case OM_FLOW_PUSH_FAN:
-        numberSelector.setRange(10.0, 200.0, 0.1, false, 1); // 0 - 200 (m3/h)
-        setpointPidFlow = 10.0;
-        numberSelector.setValue(setpointPidFlow);
-        break;
+  }  
+  switch (mode) {
+    case OM_SPEED_PULL_FAN:
+    case OM_SPEED_PUSH_FAN:
+      numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
+      numberSelector.setValue(lastEncoderOperationValue >= 0.0
+        && lastEncoderOperationValue <= 100.0
+        ? lastEncoderOperationValue : 10.0);
+      setMasterFanSpeed(lastEncoderOperationValue * 10.23);
+      break;
 
-      case OM_POWER_PULL_FAN:
-      case OM_POWER_PUSH_FAN:
-        numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
-        numberSelector.setValue(10.0);
-        break;
-    }
+    case OM_FLOW_PULL_FAN:
+    case OM_FLOW_PUSH_FAN:
+      numberSelector.setRange(10.0, 200.0, 0.1, false, 1); // 0 - 200 (m3/h)
+      setpointPidFlow = lastEncoderOperationValue >= 10.0 
+        && lastEncoderOperationValue <= 200.0
+        ? lastEncoderOperationValue : 10.0;
+      numberSelector.setValue(setpointPidFlow);
+      break;
+
+    case OM_POWER_PULL_FAN:
+    case OM_POWER_PUSH_FAN:
+      numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
+      numberSelector.setValue(lastEncoderOperationValue >= 0.0 
+        && lastEncoderOperationValue <= 100.0
+        ? lastEncoderOperationValue : 10.0);
+      break;
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -609,6 +606,7 @@ static void initNextMode(ModeType type) {
       break;
     
     case MT_OPERATION:
+      setOperationMode(operationMode);
       displayMeasurements();
       break;
 
@@ -628,7 +626,6 @@ static void initNextMode(ModeType type) {
     case MT_ADJUST_OFFSETS:
       adjustSensorOffsets();
       initNextMode(MT_OPERATION);
-      displayMeasurements();
       break;
   }
 }
@@ -660,7 +657,7 @@ static void on_button_short_click() {
     case MT_TUNE_PID_FLOW:
       switch (pidTuneType) {
         case PID_TUNE_NONE:
-          switch((PidTuneType)(uint8_t)numberSelector.getValue()) {
+          switch ((PidTuneType)(uint8_t)numberSelector.getValue()) {
             case PID_TUNE_NONE:
               initNextMode(MT_SELECT);
               break;
@@ -795,22 +792,23 @@ static void loopRotaryEncoder() {
         break;
       
       case MT_OPERATION:
+        lastEncoderOperationValue = numberSelector.getValue();
         switch (operationMode) {
           case OM_SPEED_PULL_FAN:
           case OM_SPEED_PUSH_FAN:
-            setMasterFanSpeed(numberSelector.getValue()* 10.23);
-            displayTextNumber("Sf %.1f%%", numberSelector.getValue());
+            setMasterFanSpeed(lastEncoderOperationValue * 10.23);
+            displayTextNumber("Sf %.1f%%", lastEncoderOperationValue);
             break;
 
           case OM_FLOW_PULL_FAN:
           case OM_FLOW_PUSH_FAN:
-            setpointPidFlow = numberSelector.getValue();
+            setpointPidFlow = lastEncoderOperationValue;
             displayTextNumber("flow %.1fm3/s", setpointPidFlow);
             break;
 
           case OM_POWER_PULL_FAN:
           case OM_POWER_PUSH_FAN:
-            setpointPidFlow = numberSelector.getValue();
+            setpointPidFlow = lastEncoderOperationValue;
             displayTextNumber("Pf %.1f%%", setpointPidFlow);
             break;
         }
@@ -1073,6 +1071,8 @@ static void displayAdjustSensorOffsets(const char *sensor) {
   display.clearDisplay();
   readPressureSensors();
   display.setTextSize(1);
+  printAlignCenter("Adjusting Offsets", 64, 0);
+  readPressureSensors();
   display.setCursor(0, 28);
   display.printf("Offset %s...", sensor);
   readPressureSensors();
