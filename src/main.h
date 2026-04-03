@@ -8,6 +8,7 @@ typedef enum {
   MT_TUNE_PID_FLOW = 4,
   MT_TUNE_PID_BALANCE = 5,
   MT_ADJUST_OFFSETS = 6,
+  MT_SET_DIAMETERS = 7,
 } ModeType;
 extern ModeType modeType;
 
@@ -34,6 +35,13 @@ typedef enum {
   PID_TUNE_D = 3,
 } PidTuneType;
 extern PidTuneType pidTuneType;
+
+typedef enum {
+  SET_DIA_NONE = 0,
+  SET_DIA_INLET = 1,
+  SET_DIA_THROAT = 2,
+} SetDiameterType;
+extern SetDiameterType setDiameterType;
 
 typedef struct {
   float inletDiameter; // Diameter of the inlet of the venturi in meters

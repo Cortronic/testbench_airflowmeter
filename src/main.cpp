@@ -97,6 +97,7 @@ FollowFanType followFanType = FOLLOW_PULL_FAN;
 ModeType modeType = MT_OPERATION;
 PidTuneType pidTuneType = PID_TUNE_NONE;
 OperationMode operationMode = OM_SPEED_PULL_FAN;
+SetDiameterType setDiameterType = SET_DIA_NONE;
 
 // setup PID controllers
 // Define Variables we'll be connecting to
@@ -108,9 +109,8 @@ double setpointPidBalance, inputPidBalance, outputPidBalance;
 double KpBalance=6, KiBalance=3, KdBalance=0;
 PID pidBalance(&inputPidBalance, &outputPidBalance, &setpointPidBalance, KpBalance, KiBalance, KdBalance, DIRECT);
 
-//const float flowFactor = 620.21; // obsolete
-//float Cf = Cd * flowFactor; // obsolete
-float rho = 1.2; // densitity of air at 1013,25 hPa, 20 C, and 60 %Rh (Kg/m3)
+
+float rho = 1.2; // densitity of air at 1013,25 hPa, 20 °C, and 60 %Rh (Kg/m3)
 
 float offsetVenturiPressure = 0.0;
 float offsetBalancePressure = 0.0;
@@ -136,6 +136,7 @@ static void  displayTextNumber(const char *txt, float);
 static void  displayAdjustSensorOffsets(const char *sensor);
 static void  displayAdjustSensorOffsetsProgress(int16_t progress);
 static void  displaySelectTunePID(PidTuneType type);
+static void  displaySelectSetDiameter(SetDiameterType type);
 static void  initBME280();
 static void  initSDP(SensirionI2CSdp&, TwoWire&);
 static float calculateFlowCompensated(float dP);
@@ -594,7 +595,7 @@ static void initNextMode(ModeType type) {
   switch (type) {
     
     case MT_SELECT:
-      numberSelector.setRange(1, 6,  1, true, 0);
+      numberSelector.setRange(1, 7,  1, true, 0);
       numberSelector.setValue(MT_SELECT_OPERATION); // sets initial value
       displaySelectMode(MT_SELECT_OPERATION);
       break;
@@ -626,6 +627,13 @@ static void initNextMode(ModeType type) {
     case MT_ADJUST_OFFSETS:
       adjustSensorOffsets();
       initNextMode(MT_OPERATION);
+      break;
+
+    case MT_SET_DIAMETERS:
+      setDiameterType = SET_DIA_NONE;
+      numberSelector.setRange(0, 2, 1, true, 0);
+      numberSelector.setValue(SET_DIA_NONE);
+      displaySelectSetDiameter(SET_DIA_NONE);
       break;
   }
 }
@@ -737,6 +745,46 @@ static void on_button_short_click() {
           break;
       }
       break;
+   
+    case MT_SET_DIAMETERS:
+      switch (setDiameterType) {
+        case SET_DIA_NONE:
+          switch ((SetDiameterType)(uint8_t)numberSelector.getValue()) {
+            case SET_DIA_NONE:
+              initNextMode(MT_SELECT);
+              break;
+            case SET_DIA_INLET:
+              setDiameterType = SET_DIA_INLET;
+              numberSelector.setRange(0.01, 0.3, 0.001, false, 3);
+              numberSelector.setValue(venturi.inletDiameter);
+              displayMeasurements();
+              break;
+            case SET_DIA_THROAT:
+              setDiameterType = SET_DIA_THROAT;
+              numberSelector.setRange(0.01, 0.25, 0.001, false, 3);
+              numberSelector.setValue(venturi.throatDiameter);
+              displayMeasurements();
+             break;
+          }
+          break;
+        case SET_DIA_INLET:
+          venturi.inletDiameter = numberSelector.getValue();
+          venturi.areaInlet = M_PI * pow(venturi.inletDiameter / 2.0, 2);
+          venturi.betaRatio = venturi.throatDiameter / venturi.inletDiameter;
+          venturi.betaCoefficient = 1.0 - pow(venturi.betaRatio, 4);
+          saveFloat(KEY_VENTURI_INLET_DIAMETER, venturi.inletDiameter);
+          initNextMode(MT_SET_DIAMETERS);
+          break;
+        case SET_DIA_THROAT:
+          venturi.throatDiameter = numberSelector.getValue();
+          venturi.areaThroat = M_PI * pow(venturi.throatDiameter / 2.0, 2);
+          venturi.betaRatio = venturi.throatDiameter / venturi.inletDiameter;
+          venturi.betaCoefficient = 1.0 - pow(venturi.betaRatio, 4);
+          saveFloat(KEY_VENTURI_THROAT_DIAMETER, venturi.throatDiameter);
+          initNextMode(MT_SET_DIAMETERS);
+          break; 
+      }
+      break;  
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -871,6 +919,19 @@ static void loopRotaryEncoder() {
             break;
         } 
         break;
+      case MT_SET_DIAMETERS:
+        switch (setDiameterType) {
+          case SET_DIA_NONE:
+            displaySelectSetDiameter((SetDiameterType)(uint8_t)numberSelector.getValue());
+            break;
+          case SET_DIA_INLET:
+            displayTextNumber("Inlet dia: %.3fm", numberSelector.getValue());
+            break;
+          case SET_DIA_THROAT:
+            displayTextNumber("Throat dia: %.3fm", numberSelector.getValue());
+            break;
+        }
+        break;  
     }
   } 
   handle_rotary_button();
@@ -1149,6 +1210,15 @@ static void displayMeasurements() {
       // display derivative gain PID controller
       display.printf("Kd balance: %.2f", numberSelector.getValue());
     }     
+  
+  } else if (modeType == MT_SET_DIAMETERS) {
+    if (setDiameterType == SET_DIA_INLET) {
+      // display inlet diameter venturi
+      display.printf("Inlet dia: %.3fm", numberSelector.getValue());
+    } else if (setDiameterType == SET_DIA_THROAT) {
+      // display throat diameter venturi
+      display.printf("Throat dia: %.3fm", numberSelector.getValue());
+    }
   }
   readPressureSensors();
 
@@ -1225,6 +1295,10 @@ static void displaySelectMode(ModeType mtype) {
   display.print("Adjust Offsets");
   if (mtype == MT_ADJUST_OFFSETS) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
+  if (mtype == MT_SET_DIAMETERS) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 55);
+  display.print("Set Diameters");
+  if (mtype == MT_SET_DIAMETERS) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
   display.display();
 }
 //////////////////////////////////////////////////////////////////////////
@@ -1291,6 +1365,30 @@ static void displaySelectTunePID(PidTuneType type) {
   display.print("Tune Kd");
   if (type == PID_TUNE_D) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
   
+  display.display();
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void displaySelectSetDiameter(SetDiameterType type) {
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+
+  if (type == SET_DIA_NONE) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 1);
+  display.print("Back");
+  if (type == SET_DIA_NONE) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (type == SET_DIA_INLET) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 10);
+  display.print("Set Inlet Dia");
+  if (type == SET_DIA_INLET) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (type == SET_DIA_THROAT)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 19);
+  display.print("Set Throat Dia");
+  if (type == SET_DIA_THROAT) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
   display.display();
 }
 //////////////////////////////////////////////////////////////////////////
