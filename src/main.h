@@ -34,3 +34,27 @@ typedef enum {
   PID_TUNE_D = 3,
 } PidTuneType;
 extern PidTuneType pidTuneType;
+
+typedef struct {
+  float inletDiameter; // Diameter of the inlet of the venturi in meters
+  float throatDiameter; // Diameter of the throat in meters
+  float areaInlet; // Cross-sectional area of the inlet in square meters
+  float areaThroat; // Cross-sectional area of the throat in square meters
+  float betaRatio; // Ratio of throat diameter to inlet diameter (dimensionless)
+  float betaCoefficient; // Coefficient for calculating beta ratio effects (1 - pow(betaRatio, 4))
+  float dischargeCoefficient; // Discharge coefficient of the venturi (dimensionless)
+} VenturiConstants;
+extern VenturiConstants venturi;
+
+// Keys for saving settings in non-volatile storage
+#define KEY_VENTURI_INLET_DIAMETER "inletDia"
+#define KEY_VENTURI_THROAT_DIAMETER "throadDia"
+#define KEY_VENTURI_CD "Cd"
+#define KEY_OFFSET_BALANCE_PRESSURE_SENSOR "offsetBalance"
+#define KEY_OFFSET_VENTURI_PRESSURE_SENSOR "offsetVenturi"
+#define KEY_KP_FLOW "KpFlow"
+#define KEY_KI_FLOW "KiFlow"
+#define KEY_KD_FLOW "KdFlow"
+#define KEY_KP_BALANCE "KpBalance"
+#define KEY_KI_BALANCE "KiBalance"
+#define KEY_KD_BALANCE "KdBalance"

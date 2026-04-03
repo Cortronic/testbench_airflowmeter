@@ -54,13 +54,7 @@ volatile uint32_t tachoPullFanRPM = 0;
 volatile uint32_t tachoPushFanRPM = 0;
 
 // Venturi Constants
-const float D = 0.116;      // Inlet diameter (m)
-const float d = 0.087;      // Throat diameter (m)
-float Cd = 0.975;           // Discharge coefficient (adjust after calibration)    
-const float beta = d / D;
-const float Cb = 1 - pow(beta, 4);
-const float A1 = (PI * pow(D, 2)) / 4.0; // Inlet area (m3)
-const float A2 = (PI * pow(d, 2)) / 4.0; // Throat area (m3)
+VenturiConstants venturi;
 
 //paramaters for button
 const unsigned long shortPressAfterMiliseconds = 50;   // how long short press shoud be.
@@ -114,8 +108,8 @@ double setpointPidBalance, inputPidBalance, outputPidBalance;
 double KpBalance=6, KiBalance=3, KdBalance=0;
 PID pidBalance(&inputPidBalance, &outputPidBalance, &setpointPidBalance, KpBalance, KiBalance, KdBalance, DIRECT);
 
-const float flowFactor = 620.21; // obsolete
-float Cf = Cd * flowFactor; // obsolete
+//const float flowFactor = 620.21; // obsolete
+//float Cf = Cd * flowFactor; // obsolete
 float rho = 1.2; // densitity of air at 1013,25 hPa, 20 C, and 60 %Rh (Kg/m3)
 
 float offsetVenturiPressure = 0.0;
@@ -231,6 +225,9 @@ void setup() {
   setupTimer0();
   delay(500);
 
+  bme280.takeForcedMeasurement();
+  setRho(bme280.readTemperature(), bme280.readPressure(), bme280.readHumidity());
+  
   Serial.print("\n Setup done...\n\n");
   delay(500);
 }
@@ -275,9 +272,9 @@ void loop() {
       readPressureSensors();
 
       // get the measurements from the BME280
-      pressureAbsolute.add(bme280.readPressure() / 100.0); // convert from Pa to hPa
+      pressureAbsolute.add(bme280.readPressure()); // Pa
       readPressureSensors();
-      temperatureAmbient.add(bme280.readTemperature());
+      temperatureAmbient.add(bme280.readTemperature()); // °C
       readPressureSensors();
       humidityAmbient.add(bme280.readHumidity());
       readPressureSensors();
@@ -288,7 +285,7 @@ void loop() {
 
     // every minute
     if (loopcnt % 600 == 0) {
-       setRho(temperatureAmbient.get(), pressureAbsolute.get() * 100.0,humidityAmbient.get());
+       setRho(temperatureAmbient.get(), pressureAbsolute.get(), humidityAmbient.get());
     }
     
     // every 2 seconds
@@ -386,19 +383,22 @@ static void saveFloat(const char* key, float value) {
 static void loadPreferences() {
   preferences.begin("testbench", true);
 
-  Cd = preferences.getFloat("Cd", 0.975);
-  if (Cd >= 0.9 && Cd <= 1.0) {
-    Cf = flowFactor * Cd;
-  }
+  venturi.inletDiameter = preferences.getFloat(KEY_VENTURI_INLET_DIAMETER, 0.116);
+  venturi.throatDiameter = preferences.getFloat(KEY_VENTURI_THROAT_DIAMETER, 0.087);
+  venturi.areaInlet = M_PI * pow(venturi.inletDiameter / 2.0, 2);
+  venturi.areaThroat = M_PI * pow(venturi.throatDiameter / 2.0, 2);
+  venturi.betaRatio = venturi.throatDiameter / venturi.inletDiameter;
+  venturi.betaCoefficient = 1.0 - pow(venturi.betaRatio, 4);
+  venturi.dischargeCoefficient = preferences.getFloat(KEY_VENTURI_CD, 0.975);
 
-  offsetBalancePressure = preferences.getFloat("offsetBalance", 0.0);
-  offsetVenturiPressure = preferences.getFloat("offsetVenturi", 0.0);
-  KpFlow =  preferences.getFloat("KpFlow", KpFlow);
-  KiFlow =  preferences.getFloat("KiFlow", KiFlow);
-  KdFlow =  preferences.getFloat("KdFlow", KdFlow);
-  KpBalance = preferences.getFloat("KpBalance", KpBalance);
-  KiBalance = preferences.getFloat("KiBalance", KiBalance);
-  KdBalance = preferences.getFloat("KdBalance", KdBalance);
+  offsetBalancePressure = preferences.getFloat(KEY_OFFSET_BALANCE_PRESSURE_SENSOR, 0.0);
+  offsetVenturiPressure = preferences.getFloat(KEY_OFFSET_VENTURI_PRESSURE_SENSOR, 0.0);
+  KpFlow =  preferences.getFloat(KEY_KP_FLOW, KpFlow);
+  KiFlow =  preferences.getFloat(KEY_KI_FLOW, KiFlow);
+  KdFlow =  preferences.getFloat(KEY_KD_FLOW, KdFlow);
+  KpBalance = preferences.getFloat(KEY_KP_BALANCE, KpBalance);
+  KiBalance = preferences.getFloat(KEY_KI_BALANCE, KiBalance);
+  KdBalance = preferences.getFloat(KEY_KD_BALANCE, KdBalance);
 
   preferences.end();
 }
@@ -550,7 +550,7 @@ static void adjustSensorOffsetVenturiPressure() {
   }
 
   offsetVenturiPressure = calibration.get();
-  saveFloat("offsetVenturi", offsetVenturiPressure);
+  saveFloat(KEY_OFFSET_VENTURI_PRESSURE_SENSOR, offsetVenturiPressure);
   Serial.printf("offset venturi %f\n", offsetVenturiPressure);
   delay(500); 
 }
@@ -574,7 +574,7 @@ static void adjustSensorOffsetBalancePressure() {
   }
   
   offsetBalancePressure = calibration.get();
-  saveFloat("offsetBalance", offsetBalancePressure);
+  saveFloat(KEY_OFFSET_BALANCE_PRESSURE_SENSOR, offsetBalancePressure);
   Serial.printf("offset balance %f\n", offsetBalancePressure);
   delay(500); 
 }
@@ -612,7 +612,7 @@ static void initNextMode(ModeType type) {
 
     case MT_CAL_FLOW:
       numberSelector.setRange(0.9, 1.0, 0.001, false, 3);
-      numberSelector.setValue(Cd);
+      numberSelector.setValue(venturi.dischargeCoefficient);
       break;
 
     case MT_TUNE_PID_FLOW:
@@ -649,8 +649,8 @@ static void on_button_short_click() {
       break;
 
     case MT_CAL_FLOW:
-      Cd = numberSelector.getValue();
-      saveFloat("Cd", Cd);
+      venturi.dischargeCoefficient = numberSelector.getValue();
+      saveFloat(KEY_VENTURI_CD, venturi.dischargeCoefficient);
       initNextMode(MT_OPERATION);
       break;
     
@@ -682,15 +682,15 @@ static void on_button_short_click() {
           }
           break;
         case PID_TUNE_P:
-          saveFloat("KpFlow", numberSelector.getValue());
+          saveFloat(KEY_KP_FLOW, numberSelector.getValue());
           initNextMode(MT_TUNE_PID_FLOW);
           break;
         case PID_TUNE_I:
-          saveFloat("KiFlow", numberSelector.getValue());
+          saveFloat(KEY_KI_FLOW, numberSelector.getValue());
           initNextMode(MT_TUNE_PID_FLOW);
           break;  
         case PID_TUNE_D:
-          saveFloat("KdFlow", numberSelector.getValue());
+          saveFloat(KEY_KD_FLOW, numberSelector.getValue());
           initNextMode(MT_TUNE_PID_FLOW);
           break; 
       }
@@ -724,15 +724,15 @@ static void on_button_short_click() {
           }
           break;
         case PID_TUNE_P:
-          saveFloat("KpBalance", numberSelector.getValue());
+          saveFloat(KEY_KP_BALANCE, numberSelector.getValue());
           initNextMode(MT_TUNE_PID_BALANCE);
           break;
         case PID_TUNE_I:
-          saveFloat("KiBalance", numberSelector.getValue());
+          saveFloat(KEY_KI_BALANCE, numberSelector.getValue());
           initNextMode(MT_TUNE_PID_BALANCE);
           break; 
         case PID_TUNE_D:
-          saveFloat("KdBalance", numberSelector.getValue());
+          saveFloat(KEY_KD_BALANCE, numberSelector.getValue());
           initNextMode(MT_TUNE_PID_BALANCE);
           break;
       }
@@ -815,8 +815,8 @@ static void loopRotaryEncoder() {
         break;
 
       case MT_CAL_FLOW:
-        Cd = numberSelector.getValue();
-        displayTextNumber("Cd %.3f", Cd);
+        venturi.dischargeCoefficient = numberSelector.getValue();
+        displayTextNumber("Cd %.3f", venturi.dischargeCoefficient);
         break;
 
       case MT_TUNE_PID_FLOW:
@@ -1177,7 +1177,7 @@ static void displayMeasurements() {
 
   // display absolute pressure
   display.setCursor(0, 57);
-  display.printf("%.1f hPa", pressureAbsolute.get());
+  display.printf("%.1f hPa", pressureAbsolute.get() / 100.0);
   readPressureSensors();
 
   // display humidity
@@ -1296,18 +1296,18 @@ static void displaySelectTunePID(PidTuneType type) {
 //////////////////////////////////////////////////////////////////////////
 
 /**
- * Berekent de dichtheid (Rho) van lucht op basis van temp, druk en vochtigheid.
- * @param tempC Temperatuur in Celsius van de BME280.
- * @param absPressurePa Absolute luchtdruk in Pascal van de BME280.
- * @param humidityPct Relatieve vochtigheid in % van de BME280.
+ * Calculates the air density (Rho) based on temperature, pressure, and humidity.
+ * @param tempC Temperature in Celsius of the BME280.
+ * @param absPressurePa Absolute air pressure in Pascal of the BME280.
+ * @param humidityPct Relative humidity in % of the BME280.
  */
 static void setRho(float tempC, float absPressurePa, float humidityPct) {
 
-    // --- 1. Luchtdichtheid berekenen (Vochtige lucht) ---
+    // --- 1. Air density calculate (humid air) ---
     float T = tempC + 273.15; // Kelvin
     float phi = humidityPct / 100.0;
     
-    // Verzadigde dampdruk (Magnus) en actuele dampdruk
+    // Saturated vapor pressure (Magnus) and actual vapor pressure
     float pSat = 610.78 * exp((17.27 * tempC) / (tempC + 237.3));
     float pv = phi * pSat;
     float pd = absPressurePa - pv;
@@ -1317,8 +1317,7 @@ static void setRho(float tempC, float absPressurePa, float humidityPct) {
 }
 //////////////////////////////////////////////////////////////////////////
 
-// Deze functie berekent eerst de actuele luchtdichtheid en gebruikt die vervolgens 
-// om de volumestroom door de Venturi te bepalen.
+// This function calculates the actual air density and uses it to determine the volumetric flow through the Venturi.
 
 /**
  * Berekent de volumestroom (m3/h) gecorrigeerd voor temp, druk en vochtigheid.
@@ -1331,9 +1330,9 @@ float getFlow(float deltaP) {
     if (deltaP <= 0) return 0.0;
 
     // --- 1. get density air
-    //float rho = getRho(tempC, absPressurePa, humidityPct);
+    // float rho = getRho(tempC, absPressurePa, humidityPct);
 
-    // --- 2. Venturi Constanten ---
+    // --- 2. Venturi Constants ---
     // const float D = 0.116;      // Inlet diameter (m)
     // const float d = 0.087;      // Throat diameter (m)
     // const float Cd = 0.975;     // Discharge coefficient (adjust after calibration)    
@@ -1341,12 +1340,12 @@ float getFlow(float deltaP) {
     // const float Cb = 1 - pow(beta, 4);
     // const float A2 = (PI * pow(d, 2)) / 4.0;
     
-    // The Flow Formule (Bernoulli + continuïteit)
+    // The Flow Formule (Bernoulli + continuity)
     // Q = Cd * A2 * sqrt( (2 * deltaP) / (rho * (1 - beta^4)) )
-    float velocityThroat = sqrt((2 * deltaP) / (rho * Cb));
-    float flowM3s = Cd * A2 * velocityThroat;
+    float velocityThroat = sqrt((2 * deltaP) / (rho * venturi.betaCoefficient));
+    float flowM3s = venturi.dischargeCoefficient * venturi.areaThroat * velocityThroat;
 
-    return flowM3s * 3600.0; // Omrekenen naar m3/h
+    return flowM3s * 3600.0; // convert to m3/h
 }
 //////////////////////////////////////////////////////////////////////////
 
@@ -1363,32 +1362,32 @@ float getFlow(float deltaP) {
   * 
 */
 
+/*
 static float calculateFlowCompensated(float dP) {
   float Pabs = pressureAbsolute.get() * 100.0;
   float Tamb = temperatureAmbient.get() + 273.15;
 
   return dP > 0.0 ? Cf * sqrt(dP * Tamb / Pabs) : 0.0; // (m³/h)
 }
-//////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////*/
 
-//Deze functie berekent eerst de actuele luchtdichtheid en gebruikt die vervolgens 
-// om de volumestroom door de Venturi te bepalen.
+// This function calculates the actual air density and uses it to determine the volumetric flow through the Venturi.
 
 /**
- * Berekent de volumestroom (m3/h) gecorrigeerd voor temp, druk en vochtigheid.
- * @param deltaP De gemeten druk van de SDP800 in Pascal (Pa).
- * @param tempC Temperatuur in Celsius van de BME280.
- * @param absPressurePa Absolute luchtdruk in Pascal van de BME280.
- * @param humidityPct Relatieve vochtigheid in % van de BME280.
+ * Calculates the volumetric flow (m3/h) corrected for temperature, pressure, and humidity.
+ * @param deltaP The measured pressure of the SDP800 in Pascal (Pa).
+ * @param tempC Temperature in Celsius of the BME280.
+ * @param absPressurePa Absolute air pressure in Pascal of the BME280.
+ * @param humidityPct Relative humidity in % of the BME280.
  */
 float _getCompensatedFlow(float deltaP, float tempC, float absPressurePa, float humidityPct) {
     if (deltaP <= 0) return 0.0;
 
-    // --- 1. Luchtdichtheid berekenen (Vochtige lucht) ---
+    // --- 1. air density calculate (humid air) ---
     float T = tempC + 273.15; // Kelvin
     float phi = humidityPct / 100.0;
     
-    // Verzadigde dampdruk (Magnus) en actuele dampdruk
+    // Saturated vapor pressure (Magnus) and actual vapor pressure
     float pSat = 610.78 * exp((17.27 * tempC) / (tempC + 237.3));
     float pv = phi * pSat;
     float pd = absPressurePa - pv;
@@ -1396,19 +1395,19 @@ float _getCompensatedFlow(float deltaP, float tempC, float absPressurePa, float 
     // rho = (Pd / (Rd * T)) + (Pv / (Rv * T))
     float rho = (pd / (287.058 * T)) + (pv / (461.495 * T));
 
-    // --- 2. Venturi Constanten ---
-    const float D = 0.120;      // Inlaat diameter (m)
-    const float d = 0.090;      // Keel diameter (m)
-    const float Cd = 0.975;     // Discharge coefficient (na kalibratie aanpassen)
+    // --- 2. Venturi Constants ---
+    const float D = 0.120;      // Inlet diameter (m)
+    const float d = 0.090;      // Throat diameter (m)
+    const float Cd = 0.975;     // Discharge coefficient (after calibration)
     
     float beta = d / D;
-    float areaKeel = (PI * pow(d, 2)) / 4.0;
+    float areaThroat = (PI * pow(d, 2)) / 4.0;
 
-    // --- 3. De Flow Formule (Bernoulli + continuïteit) ---
+    // --- 3. De Flow Formule (Bernoulli and continuity equation) ---
     // Q = Cd * A2 * sqrt( (2 * deltaP) / (rho * (1 - beta^4)) )
-    float velocityKeel = sqrt((2 * deltaP) / (rho * (1 - pow(beta, 4))));
-    float flowM3s = Cd * areaKeel * velocityKeel;
+    float velocityThroat = sqrt((2 * deltaP) / (rho * (1 - pow(beta, 4))));
+    float flowM3s = Cd * areaThroat * velocityThroat;
 
-    return flowM3s * 3600.0; // Omrekenen naar m3/h
+    return flowM3s * 3600.0; // convert to m3/h
 }
 
