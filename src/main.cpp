@@ -893,6 +893,7 @@ static void loopRotaryEncoder() {
             break;
         } 
         break;
+
       case MT_TUNE_PID_BALANCE:
         switch (pidTuneType) {
 
@@ -919,6 +920,11 @@ static void loopRotaryEncoder() {
             break;
         } 
         break;
+      
+      case MT_ADJUST_OFFSETS:
+        // do nothing on encoder changes, only show progress during calibration
+        break;
+
       case MT_SET_DIAMETERS:
         switch (setDiameterType) {
           case SET_DIA_NONE:
