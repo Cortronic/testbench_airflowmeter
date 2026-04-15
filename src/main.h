@@ -2,8 +2,8 @@
 
 typedef enum {
   MT_SELECT = 0,
-  MT_SELECT_OPERATION = 1,
-  MT_OPERATION = 2,
+  MT_OPERATION = 1,
+  MT_SELECT_OPERATION = 2,
   MT_CAL_FLOW = 3,
   MT_TUNE_PID_FLOW = 4,
   MT_TUNE_PID_BALANCE = 5,
@@ -23,10 +23,8 @@ typedef enum {
   OM_SPEED_PUSH_FAN = 1,
   OM_FLOW_PULL_FAN = 2,
   OM_FLOW_PUSH_FAN = 3,
-  OM_POWER_PULL_FAN = 4,
-  OM_POWER_PUSH_FAN = 5,
-} OperationMode;
-extern OperationMode operationMode;
+} OperatingMode;
+extern OperatingMode operatingMode;
 
 typedef enum {
   PID_TUNE_NONE = 0,
@@ -66,3 +64,14 @@ extern VenturiConstants venturi;
 #define KEY_KP_BALANCE "KpBalance"
 #define KEY_KI_BALANCE "KiBalance"
 #define KEY_KD_BALANCE "KdBalance"
+
+// PID controller parameters
+#define PID_KP_MIN 0.0
+#define PID_KP_MAX 50.0
+#define PID_KP_STEP 0.1
+#define PID_KI_MIN 0.0
+#define PID_KI_MAX 50.0
+#define PID_KI_STEP 0.1
+#define PID_KD_MIN 0.0
+#define PID_KD_MAX 50.0
+#define PID_KD_STEP 0.1

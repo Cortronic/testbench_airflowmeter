@@ -1,7 +1,6 @@
+#include "main.h"
+#include "fan.h"
 #include <Arduino.h>
-
-#include <driver/ledc.h>
-#include <driver/dac.h>
 #include <Wire.h>
 #include <Preferences.h>
 #include <AiEsp32RotaryEncoder.h>
@@ -14,7 +13,6 @@
 #include <Adafruit_BME280.h>
 #include <Smoothed.h>
 #include <PID_v1.h>
-#include "main.h"
 
 // Pin definitions
 const int FAN_ON_PIN  = 32;
@@ -45,6 +43,7 @@ const int PWM_PULL_FAN_CHAN = LEDC_CHANNEL_0;
 const int PWM_PUSH_FAN_CHAN = LEDC_CHANNEL_1;
 const int PWM_FREQ = 25000;    // 25 kHz frequency for computer fans
 const int PWM_RESOLUTION = 10; // 10-bit resolution (0-1023)
+const int PWM_DITHER_RESOLUTION = 2; // 2-bit resolution for dithering (0-3)
 
 // tachometer
 volatile uint32_t tachoFanPulseCycles = 300;
@@ -52,6 +51,10 @@ volatile uint32_t tachoPushFanPulseCount = 0;
 volatile uint32_t tachoPullFanPulseCount = 0;
 volatile uint32_t tachoPullFanRPM = 0;
 volatile uint32_t tachoPushFanRPM = 0;
+
+Fan pullFan(FAN_PULL_PWM_PIN, PWM_PULL_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION, PWM_DITHER_RESOLUTION);
+Fan pushFan(FAN_PUSH_PWM_PIN, PWM_PUSH_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION, PWM_DITHER_RESOLUTION);
+
 
 // Venturi Constants
 VenturiConstants venturi;
@@ -96,7 +99,7 @@ volatile bool ms10_passed = false;
 FollowFanType followFanType = FOLLOW_PULL_FAN;
 ModeType modeType = MT_OPERATION;
 PidTuneType pidTuneType = PID_TUNE_NONE;
-OperationMode operationMode = OM_SPEED_PULL_FAN;
+OperatingMode operatingMode = OM_SPEED_PULL_FAN;
 SetDiameterType setDiameterType = SET_DIA_NONE;
 
 // setup PID controllers
@@ -123,7 +126,7 @@ static void  setPushFanSpeed(uint32_t speed);
 static void  setMasterFan(FollowFanType type);
 static void  setMasterFanSpeed(uint32_t speed);
 static void  setSlaveFanSpeed(uint32_t speed);
-static void  setOperationMode(OperationMode mode);
+static void  setOperationMode(OperatingMode mode);
 static void  setupTachometers();
 static void  setupTimer0();
 static void  initDisplay(void);
@@ -131,7 +134,7 @@ static void  readPressureSensors();
 static void  loopRotaryEncoder();
 static void  displayMeasurements();
 static void  displaySelectMode(ModeType);
-static void  displaySelectOperationMode(OperationMode mode);
+static void  displaySelectOperationMode(OperatingMode mode);
 static void  displayTextNumber(const char *txt, float);
 static void  displayAdjustSensorOffsets(const char *sensor);
 static void  displayAdjustSensorOffsetsProgress(int16_t progress);
@@ -139,7 +142,6 @@ static void  displaySelectTunePID(PidTuneType type);
 static void  displaySelectSetDiameter(SetDiameterType type);
 static void  initBME280();
 static void  initSDP(SensirionI2CSdp&, TwoWire&);
-static float calculateFlowCompensated(float dP);
 static void  drawString(int16_t x, int16_t y, const String &text);
 static float getFlow(float dP);
 static void  setRho(float tempC, float absPressurePa, float humidityPct);
@@ -165,11 +167,9 @@ void setup() {
 
   // configure PWM
   Serial.println("Setup PWM");
-  ledcSetup(PWM_PULL_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(FAN_PULL_PWM_PIN, PWM_PULL_FAN_CHAN);
-  ledcSetup(PWM_PUSH_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(FAN_PUSH_PWM_PIN, PWM_PUSH_FAN_CHAN);
- 
+  pullFan.begin();
+  pushFan.begin();
+
   // set initial fan speeds to zero
   setMasterFanSpeed(0);
   setSlaveFanSpeed(0);
@@ -208,7 +208,7 @@ void setup() {
   inputPidFlow = 0.0;
   Serial.println("turn the PID Flow on.");
   pidFlow.SetMode(AUTOMATIC);
-  pidFlow.SetOutputLimits(0, 1023);
+  pidFlow.SetOutputLimits(0, (((1 << PWM_RESOLUTION) - 1) << PWM_DITHER_RESOLUTION));
   pidFlow.SetControllerDirection(DIRECT);
   delay(500);
 
@@ -218,7 +218,7 @@ void setup() {
   inputPidBalance = 0.0;
   Serial.println("turn the PID Balance on.");
   pidBalance.SetMode(AUTOMATIC);
-  pidBalance.SetOutputLimits(0, 1023);
+  pidBalance.SetOutputLimits(0, (((1 << PWM_RESOLUTION) - 1) << PWM_DITHER_RESOLUTION)); // Apply dithering to extend effective resolution
   pidBalance.SetControllerDirection(DIRECT);
   delay(500);
 
@@ -257,7 +257,7 @@ void loop() {
     setSlaveFanSpeed(outputPidBalance); // Apply PWM to fan
 
     if (modeType != MT_ADJUST_OFFSETS) {
-      if (operationMode == OM_FLOW_PULL_FAN || operationMode == OM_FLOW_PUSH_FAN) {
+      if (operatingMode == OM_FLOW_PULL_FAN || operatingMode == OM_FLOW_PUSH_FAN) {
         inputPidFlow = flow.get();
         pidFlow.Compute();
         setMasterFanSpeed(outputPidFlow);
@@ -315,6 +315,12 @@ void IRAM_ATTR Timer0_ISR() {
     tachoPushFanRPM = tachoPushFanPulseCount * 10;
     tachoPushFanPulseCount = 0;
     tachoFanPulseCycles = 300;
+  }
+
+  if (tachoFanPulseCycles % 2 == 0) { // every 20ms
+    pushFan.handleDither();
+  } else { // every 20ms
+    pullFan.handleDither();
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -425,7 +431,7 @@ static void setPullFanSpeed(uint32_t speed) {
   static uint32_t lastspeed = 0xFFFFFFFF;
 
   if (lastspeed != speed) {
-    ledcWrite(PWM_PULL_FAN_CHAN, speed);
+    pullFan.setSpeed(speed);
     if (followFanType == FOLLOW_PULL_FAN) {
       if (speed == 0) {
         digitalWrite(FAN_ON_PIN, LOW);
@@ -440,11 +446,17 @@ static void setPullFanSpeed(uint32_t speed) {
 } 
 //////////////////////////////////////////////////////////////////////////
 
+static void setPullFanSpeedPercent(float percent) {
+  uint16_t speed = (uint16_t)(percent * pullFan.getMaxSpeed() / 100.0);
+  setPullFanSpeed(speed);
+}
+//////////////////////////////////////////////////////////////////////////
+
 static void setPushFanSpeed(uint32_t speed) {
   static uint32_t lastspeed = 0xFFFFFFFF;
 
   if (lastspeed != speed) {
-    ledcWrite(PWM_PUSH_FAN_CHAN, speed);
+    pushFan.setSpeed(speed);
     if (followFanType == FOLLOW_PUSH_FAN) {
       if (speed == 0) {
         digitalWrite(FAN_ON_PIN, LOW);
@@ -459,11 +471,26 @@ static void setPushFanSpeed(uint32_t speed) {
 } 
 //////////////////////////////////////////////////////////////////////////
 
+static void setPushFanSpeedPercent(float percent) {
+  uint16_t speed = (uint16_t)(percent * pushFan.getMaxSpeed() / 100.0);
+  setPushFanSpeed(speed);
+}
+//////////////////////////////////////////////////////////////////////////
+
 static void setMasterFanSpeed(uint32_t speed) {
   if (followFanType == FOLLOW_PULL_FAN) {
     setPullFanSpeed(speed);
   } else {
     setPushFanSpeed(speed);
+  }
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void setMasterFanSpeedPercent(float percent) {
+  if (followFanType == FOLLOW_PULL_FAN) {
+    setPullFanSpeedPercent(percent);
+  } else {
+    setPushFanSpeedPercent(percent);
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -477,6 +504,15 @@ static void setSlaveFanSpeed(uint32_t speed) {
 }
 //////////////////////////////////////////////////////////////////////////
 
+static void setSlaveFanSpeedPercent(float percent) {
+  if (followFanType == FOLLOW_PULL_FAN) {
+    setPushFanSpeedPercent(percent);
+  } else {
+    setPullFanSpeedPercent(percent);
+  }
+}
+//////////////////////////////////////////////////////////////////////////
+
 static void  setMasterFan(FollowFanType type) {
   if (followFanType != type) {
     followFanType = type;
@@ -485,19 +521,27 @@ static void  setMasterFan(FollowFanType type) {
 }
 //////////////////////////////////////////////////////////////////////////
 
-static void setOperationMode(OperationMode mode) {
-  if (operationMode != mode) {
-    operationMode = mode;
+static Fan& getMasterFan() {
+  return followFanType == FOLLOW_PULL_FAN ? pullFan : pushFan;
+}
+//////////////////////////////////////////////////////////////////////////
+
+static Fan& getSlaveFan() {
+  return followFanType == FOLLOW_PULL_FAN ? pushFan : pullFan;
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void setOperationMode(OperatingMode mode) {
+  if (operatingMode != mode) {
+    operatingMode = mode;
     switch (mode) {
       case OM_SPEED_PULL_FAN:
       case OM_FLOW_PULL_FAN:
-      case OM_POWER_PULL_FAN:
         setMasterFan(FOLLOW_PULL_FAN);
         break;
 
       case OM_SPEED_PUSH_FAN:
       case OM_FLOW_PUSH_FAN:
-      case OM_POWER_PUSH_FAN:
         setMasterFan(FOLLOW_PUSH_FAN);
         break;
     }
@@ -510,7 +554,7 @@ static void setOperationMode(OperationMode mode) {
       numberSelector.setValue(lastEncoderOperationValue >= 0.0
         && lastEncoderOperationValue <= 100.0
         ? lastEncoderOperationValue : 10.0);
-      setMasterFanSpeed(lastEncoderOperationValue * 10.23);
+      setMasterFanSpeedPercent(lastEncoderOperationValue);
       break;
 
     case OM_FLOW_PULL_FAN:
@@ -520,14 +564,6 @@ static void setOperationMode(OperationMode mode) {
         && lastEncoderOperationValue <= 200.0
         ? lastEncoderOperationValue : 10.0;
       numberSelector.setValue(setpointPidFlow);
-      break;
-
-    case OM_POWER_PULL_FAN:
-    case OM_POWER_PUSH_FAN:
-      numberSelector.setRange(0.0, 100.0, 0.1, false, 1); // 0 - 100%
-      numberSelector.setValue(lastEncoderOperationValue >= 0.0 
-        && lastEncoderOperationValue <= 100.0
-        ? lastEncoderOperationValue : 10.0);
       break;
   }
 }
@@ -593,24 +629,24 @@ static void initNextMode(ModeType type) {
   modeType = type;
 
   switch (type) {
-    
+   
     case MT_SELECT:
       numberSelector.setRange(1, 7,  1, true, 0);
-      numberSelector.setValue(MT_SELECT_OPERATION); // sets initial value
-      displaySelectMode(MT_SELECT_OPERATION);
+      numberSelector.setValue(MT_OPERATION); // sets initial value
+      displaySelectMode(MT_OPERATION);
       break;
 
-    case MT_SELECT_OPERATION:
-      numberSelector.setRange(0, 5, 1, true, 0);
-      numberSelector.setValue(operationMode);
-      displaySelectOperationMode(operationMode);
-      break;
-    
     case MT_OPERATION:
-      setOperationMode(operationMode);
+      setOperationMode(operatingMode);
       displayMeasurements();
       break;
 
+    case MT_SELECT_OPERATION:
+      numberSelector.setRange(0, 3, 1, true, 0);
+      numberSelector.setValue(operatingMode);
+      displaySelectOperationMode(operatingMode);
+      break;
+    
     case MT_CAL_FLOW:
       numberSelector.setRange(0.9, 1.0, 0.001, false, 3);
       numberSelector.setValue(venturi.dischargeCoefficient);
@@ -646,22 +682,18 @@ static void on_button_short_click() {
     case MT_SELECT:
       initNextMode((ModeType)numberSelector.getValue()); 
       break;
-
-    case MT_SELECT_OPERATION:
-      setOperationMode((OperationMode)numberSelector.getValue());
-      initNextMode(MT_OPERATION);
-      break;
-
     case MT_OPERATION:
       initNextMode(MT_SELECT_OPERATION);
+      break;  
+    case MT_SELECT_OPERATION:
+      setOperationMode((OperatingMode)numberSelector.getValue());
+      initNextMode(MT_OPERATION);
       break;
-
     case MT_CAL_FLOW:
       venturi.dischargeCoefficient = numberSelector.getValue();
       saveFloat(KEY_VENTURI_CD, venturi.dischargeCoefficient);
       initNextMode(MT_OPERATION);
       break;
-    
     case MT_TUNE_PID_FLOW:
       switch (pidTuneType) {
         case PID_TUNE_NONE:
@@ -671,19 +703,19 @@ static void on_button_short_click() {
               break;
             case PID_TUNE_P:
               pidTuneType = PID_TUNE_P;
-              numberSelector.setRange(0, 20, 0.1, false, 1);
+              numberSelector.setRange(PID_KP_MIN, PID_KP_MAX, PID_KP_STEP, false, 1);
               numberSelector.setValue(KpFlow);
               displayMeasurements();
               break;
             case PID_TUNE_I:
               pidTuneType = PID_TUNE_I;
-              numberSelector.setRange(0, 10, 0.1, false, 1);
+              numberSelector.setRange(PID_KI_MIN, PID_KI_MAX, PID_KI_STEP, false, 1);
               numberSelector.setValue(KiFlow);
               displayMeasurements();
               break;
             case PID_TUNE_D:
               pidTuneType = PID_TUNE_D;
-              numberSelector.setRange(0, 10, 0.1, false, 1);
+              numberSelector.setRange(PID_KD_MIN, PID_KD_MAX, PID_KD_STEP, false, 1);
               numberSelector.setValue(KdFlow);
               displayMeasurements();
               break;
@@ -703,7 +735,7 @@ static void on_button_short_click() {
           break; 
       }
       break;
-    
+  
     case MT_TUNE_PID_BALANCE:
       switch (pidTuneType) {
         case PID_TUNE_NONE:
@@ -713,19 +745,19 @@ static void on_button_short_click() {
               break;
             case PID_TUNE_P:
               pidTuneType = PID_TUNE_P;
-              numberSelector.setRange(0, 20, 0.1, false, 1);
+              numberSelector.setRange(PID_KP_MIN, PID_KP_MAX, PID_KP_STEP, false, 1);
               numberSelector.setValue(KpBalance);
               displayMeasurements();
               break;
             case PID_TUNE_I:
               pidTuneType = PID_TUNE_I;
-              numberSelector.setRange(0, 10, 0.1, false, 1);
+              numberSelector.setRange(PID_KI_MIN, PID_KI_MAX, PID_KI_STEP, false, 1);
               numberSelector.setValue(KiBalance);
               displayMeasurements();
               break;
             case PID_TUNE_D:
               pidTuneType = PID_TUNE_D;
-              numberSelector.setRange(0, 10, 0.1, false, 1);
+              numberSelector.setRange(PID_KD_MIN, PID_KD_MAX, PID_KD_STEP, false, 1);
               numberSelector.setValue(KdBalance);
               displayMeasurements();
               break;
@@ -745,7 +777,7 @@ static void on_button_short_click() {
           break;
       }
       break;
-   
+  
     case MT_SET_DIAMETERS:
       switch (setDiameterType) {
         case SET_DIA_NONE:
@@ -835,33 +867,26 @@ static void loopRotaryEncoder() {
         displaySelectMode((ModeType)numberSelector.getValue());
         break;
 
-      case MT_SELECT_OPERATION:
-        displaySelectOperationMode((OperationMode)numberSelector.getValue());
-        break;
-      
       case MT_OPERATION:
         lastEncoderOperationValue = numberSelector.getValue();
-        switch (operationMode) {
+        switch (operatingMode) {
           case OM_SPEED_PULL_FAN:
           case OM_SPEED_PUSH_FAN:
-            setMasterFanSpeed(lastEncoderOperationValue * 10.23);
+            setMasterFanSpeedPercent(lastEncoderOperationValue);
             displayTextNumber("Sf %.1f%%", lastEncoderOperationValue);
             break;
-
           case OM_FLOW_PULL_FAN:
           case OM_FLOW_PUSH_FAN:
             setpointPidFlow = lastEncoderOperationValue;
             displayTextNumber("flow %.1fm3/s", setpointPidFlow);
             break;
-
-          case OM_POWER_PULL_FAN:
-          case OM_POWER_PUSH_FAN:
-            setpointPidFlow = lastEncoderOperationValue;
-            displayTextNumber("Pf %.1f%%", setpointPidFlow);
-            break;
         }
-        break;
+        break;  
 
+      case MT_SELECT_OPERATION:
+        displaySelectOperationMode((OperatingMode)numberSelector.getValue());
+        break;
+      
       case MT_CAL_FLOW:
         venturi.dischargeCoefficient = numberSelector.getValue();
         displayTextNumber("Cd %.3f", venturi.dischargeCoefficient);
@@ -1167,7 +1192,7 @@ static void displayMeasurements() {
   display.setCursor(0, 0);
   
  if (modeType == MT_OPERATION) {
-    switch (operationMode) {
+    switch (operatingMode) {
       case OM_SPEED_PULL_FAN:
       case OM_SPEED_PUSH_FAN:
         // display setpoint speed fan
@@ -1181,11 +1206,6 @@ static void displayMeasurements() {
         display.printf("fl %.1fm3/h", numberSelector.getValue());
         snprintf(message, sizeof(message), "%urpm", tachoPullFanRPM);
         printAlignRight(message,127,0);
-        break;
-      case OM_POWER_PULL_FAN:
-      case OM_POWER_PUSH_FAN:
-        // display setpoint power
-        display.printf("Pf %.1f%%", numberSelector.getValue());
         break;
     }
 
@@ -1271,45 +1291,45 @@ static void displaySelectMode(ModeType mtype) {
   display.clearDisplay();
   display.setTextSize(1);
 
-  if (mtype == MT_SELECT_OPERATION)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 1);
-  display.print("Select Operation Mode");
-  if (mtype == MT_SELECT_OPERATION) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
-
   if (mtype == MT_OPERATION)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 10);
-  display.print("Operation Mode");
+  display.setCursor(0, 1);
+  display.print("Back");
   if (mtype == MT_OPERATION) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (mtype == MT_SELECT_OPERATION)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 10);
+  display.print("Select operating mode");
+  if (mtype == MT_SELECT_OPERATION) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (mtype == MT_CAL_FLOW) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 19);
-  display.print("Calibrate Flow");
+  display.print("Calibrate flow");
   if (mtype == MT_CAL_FLOW) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (mtype == MT_TUNE_PID_FLOW) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 28);
-  display.print("Tune PID Flow");
+  display.print("Tune PID flow");
   if (mtype == MT_TUNE_PID_FLOW) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (mtype == MT_TUNE_PID_BALANCE) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 37);
-  display.print("Tune PID Balance");
+  display.print("Tune PID balance");
   if (mtype == MT_TUNE_PID_BALANCE) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (mtype == MT_ADJUST_OFFSETS) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 46);
-  display.print("Adjust Offsets");
+  display.print("Adjust sensor offsets");
   if (mtype == MT_ADJUST_OFFSETS) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (mtype == MT_SET_DIAMETERS) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 55);
-  display.print("Set Diameters");
+  display.print("Set venturi diameters");
   if (mtype == MT_SET_DIAMETERS) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
   display.display();
 }
 //////////////////////////////////////////////////////////////////////////
 
-static void  displaySelectOperationMode(OperationMode mode) {
+static void displaySelectOperationMode(OperatingMode mode) {
   display.clearDisplay();
   display.setTextSize(1);
 
@@ -1332,16 +1352,6 @@ static void  displaySelectOperationMode(OperationMode mode) {
   display.setCursor(0, 24);
   display.print("Flow Push Fan");
   if (mode == OM_FLOW_PUSH_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
-
-  if (mode == OM_POWER_PULL_FAN) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 32);
-  display.print("Power Pull Fan");
-  if (mode == OM_POWER_PULL_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
-
-  if (mode == OM_POWER_PUSH_FAN) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 40);
-  display.print("Power Push Fan");
-  if (mode == OM_POWER_PUSH_FAN) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   display.display();
 }
