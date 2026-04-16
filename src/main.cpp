@@ -223,7 +223,7 @@ void setup() {
   delay(500);
 
   bme280.takeForcedMeasurement();
-  venturi.setRho(bme280.readTemperature(), bme280.readPressure(), bme280.readHumidity());
+  venturi.setRho(bme280.readPressure(), bme280.readTemperature(), bme280.readHumidity());
   
   Serial.print("\n Setup done...\n\n");
   delay(500);
@@ -282,7 +282,7 @@ void loop() {
 
     // every minute
     if (loopcnt % 600 == 0) {
-       venturi.setRho(temperatureAmbient.get(), pressureAbsolute.get(), humidityAmbient.get());
+       venturi.setRho(pressureAbsolute.get(), temperatureAmbient.get(), humidityAmbient.get());
     }
     
     // every 2 seconds
