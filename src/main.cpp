@@ -1,4 +1,5 @@
 #include "main.h"
+#include "venturi.h"
 #include "fan.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -52,12 +53,11 @@ volatile uint32_t tachoPullFanPulseCount = 0;
 volatile uint32_t tachoPullFanRPM = 0;
 volatile uint32_t tachoPushFanRPM = 0;
 
+// Venturi
+Venturi venturi;
+
 Fan pullFan(FAN_PULL_PWM_PIN, PWM_PULL_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION, PWM_DITHER_RESOLUTION);
 Fan pushFan(FAN_PUSH_PWM_PIN, PWM_PUSH_FAN_CHAN, PWM_FREQ, PWM_RESOLUTION, PWM_DITHER_RESOLUTION);
-
-
-// Venturi Constants
-VenturiConstants venturi;
 
 //paramaters for button
 const unsigned long shortPressAfterMiliseconds = 50;   // how long short press shoud be.
@@ -100,7 +100,7 @@ FollowFanType followFanType = FOLLOW_PULL_FAN;
 ModeType modeType = MT_OPERATION;
 PidTuneType pidTuneType = PID_TUNE_NONE;
 OperatingMode operatingMode = OM_SPEED_PULL_FAN;
-SetDiameterType setDiameterType = SET_DIA_NONE;
+VenturiConstantsType venturiConstantsType = VENTURI_CONSTANTS_SET_NONE;
 
 // setup PID controllers
 // Define Variables we'll be connecting to
@@ -112,8 +112,6 @@ double setpointPidBalance, inputPidBalance, outputPidBalance;
 double KpBalance=6, KiBalance=3, KdBalance=0;
 PID pidBalance(&inputPidBalance, &outputPidBalance, &setpointPidBalance, KpBalance, KiBalance, KdBalance, DIRECT);
 
-
-float rho = 1.2; // densitity of air at 1013,25 hPa, 20 °C, and 60 %Rh (Kg/m3)
 
 float offsetVenturiPressure = 0.0;
 float offsetBalancePressure = 0.0;
@@ -139,12 +137,10 @@ static void  displayTextNumber(const char *txt, float);
 static void  displayAdjustSensorOffsets(const char *sensor);
 static void  displayAdjustSensorOffsetsProgress(int16_t progress);
 static void  displaySelectTunePID(PidTuneType type);
-static void  displaySelectSetDiameter(SetDiameterType type);
+static void  displaySelectVenturiConstants(VenturiConstantsType type);
 static void  initBME280();
 static void  initSDP(SensirionI2CSdp&, TwoWire&);
 static void  drawString(int16_t x, int16_t y, const String &text);
-static float getFlow(float dP);
-static void  setRho(float tempC, float absPressurePa, float humidityPct);
 //////////////////////////////////////////////////////////////////////////
 
 void setup() {
@@ -227,7 +223,7 @@ void setup() {
   delay(500);
 
   bme280.takeForcedMeasurement();
-  setRho(bme280.readTemperature(), bme280.readPressure(), bme280.readHumidity());
+  venturi.setRho(bme280.readTemperature(), bme280.readPressure(), bme280.readHumidity());
   
   Serial.print("\n Setup done...\n\n");
   delay(500);
@@ -249,7 +245,7 @@ void loop() {
 
     readPressureSensors();
 
-    flow.add(getFlow(venturiPressure.get()));
+    flow.add(venturi.getFlow(venturiPressure.get()));
 
     // Compute PID for balance pressure
     inputPidBalance = balancePressure.get();    
@@ -286,7 +282,7 @@ void loop() {
 
     // every minute
     if (loopcnt % 600 == 0) {
-       setRho(temperatureAmbient.get(), pressureAbsolute.get(), humidityAmbient.get());
+       venturi.setRho(temperatureAmbient.get(), pressureAbsolute.get(), humidityAmbient.get());
     }
     
     // every 2 seconds
@@ -346,9 +342,9 @@ void IRAM_ATTR tachoPushFanPulseCount_ISR() {
 //////////////////////////////////////////////////////////////////////////
 
 static void setupTachometers() {
-  pinMode(FAN_PULL_TACHO_PIN, INPUT_PULLUP); // GPIO 12
+  pinMode(FAN_PULL_TACHO_PIN, INPUT_PULLUP); // GPIO 34
   attachInterrupt(digitalPinToInterrupt(FAN_PULL_TACHO_PIN), tachoPullFanPulseCount_ISR, FALLING);
-  pinMode(FAN_PUSH_TACHO_PIN, INPUT_PULLUP); // GPIO 13
+  pinMode(FAN_PUSH_TACHO_PIN, INPUT_PULLUP); // GPIO 35
   attachInterrupt(digitalPinToInterrupt(FAN_PUSH_TACHO_PIN), tachoPushFanPulseCount_ISR, FALLING);
 }
 //////////////////////////////////////////////////////////////////////////
@@ -390,13 +386,11 @@ static void saveFloat(const char* key, float value) {
 static void loadPreferences() {
   preferences.begin("testbench", true);
 
-  venturi.inletDiameter = preferences.getFloat(KEY_VENTURI_INLET_DIAMETER, 0.116);
-  venturi.throatDiameter = preferences.getFloat(KEY_VENTURI_THROAT_DIAMETER, 0.087);
-  venturi.areaInlet = M_PI * pow(venturi.inletDiameter / 2.0, 2);
-  venturi.areaThroat = M_PI * pow(venturi.throatDiameter / 2.0, 2);
-  venturi.betaRatio = venturi.throatDiameter / venturi.inletDiameter;
-  venturi.betaCoefficient = 1.0 - pow(venturi.betaRatio, 4);
-  venturi.dischargeCoefficient = preferences.getFloat(KEY_VENTURI_CD, 0.975);
+  float inletDiameter = preferences.getFloat(KEY_VENTURI_INLET_DIAMETER, 0.116);
+  float throatDiameter = preferences.getFloat(KEY_VENTURI_THROAT_DIAMETER, 0.087);
+  float dischargeCoefficient = preferences.getFloat(KEY_VENTURI_CD, 0.975);
+  venturi.begin(inletDiameter, throatDiameter, dischargeCoefficient);
+  venturi.setSmoothedFlowFactor(preferences.getFloat(KEY_VENTURI_SMOOTHING_FACTOR, 0.1));
 
   offsetBalancePressure = preferences.getFloat(KEY_OFFSET_BALANCE_PRESSURE_SENSOR, 0.0);
   offsetVenturiPressure = preferences.getFloat(KEY_OFFSET_VENTURI_PRESSURE_SENSOR, 0.0);
@@ -649,7 +643,7 @@ static void initNextMode(ModeType type) {
     
     case MT_CAL_FLOW:
       numberSelector.setRange(0.9, 1.0, 0.001, false, 3);
-      numberSelector.setValue(venturi.dischargeCoefficient);
+      numberSelector.setValue(venturi.getDischargeCoefficient());
       break;
 
     case MT_TUNE_PID_FLOW:
@@ -665,11 +659,11 @@ static void initNextMode(ModeType type) {
       initNextMode(MT_OPERATION);
       break;
 
-    case MT_SET_DIAMETERS:
-      setDiameterType = SET_DIA_NONE;
-      numberSelector.setRange(0, 2, 1, true, 0);
-      numberSelector.setValue(SET_DIA_NONE);
-      displaySelectSetDiameter(SET_DIA_NONE);
+    case MT_SET_VENTURI_CONSTANTS:
+      venturiConstantsType = VENTURI_CONSTANTS_SET_NONE;
+      numberSelector.setRange(0, 3, 1, true, 0);
+      numberSelector.setValue(VENTURI_CONSTANTS_SET_NONE);
+      displaySelectVenturiConstants(VENTURI_CONSTANTS_SET_NONE);
       break;
   }
 }
@@ -690,8 +684,8 @@ static void on_button_short_click() {
       initNextMode(MT_OPERATION);
       break;
     case MT_CAL_FLOW:
-      venturi.dischargeCoefficient = numberSelector.getValue();
-      saveFloat(KEY_VENTURI_CD, venturi.dischargeCoefficient);
+      venturi.setDischargeCoefficient(numberSelector.getValue());
+      saveFloat(KEY_VENTURI_CD, venturi.getDischargeCoefficient());
       initNextMode(MT_OPERATION);
       break;
     case MT_TUNE_PID_FLOW:
@@ -778,43 +772,48 @@ static void on_button_short_click() {
       }
       break;
   
-    case MT_SET_DIAMETERS:
-      switch (setDiameterType) {
-        case SET_DIA_NONE:
-          switch ((SetDiameterType)(uint8_t)numberSelector.getValue()) {
-            case SET_DIA_NONE:
+    case MT_SET_VENTURI_CONSTANTS:
+      switch (venturiConstantsType) {
+        case VENTURI_CONSTANTS_SET_NONE:
+          switch ((VenturiConstantsType)(uint8_t)numberSelector.getValue()) {
+            case VENTURI_CONSTANTS_SET_NONE:
               initNextMode(MT_SELECT);
               break;
-            case SET_DIA_INLET:
-              setDiameterType = SET_DIA_INLET;
+            case VENTURI_CONSTANTS_SET_DIA_INLET:
+              venturiConstantsType = VENTURI_CONSTANTS_SET_DIA_INLET;
               numberSelector.setRange(0.01, 0.3, 0.001, false, 3);
-              numberSelector.setValue(venturi.inletDiameter);
+              numberSelector.setValue(venturi.getInletDiameter());
               displayMeasurements();
               break;
-            case SET_DIA_THROAT:
-              setDiameterType = SET_DIA_THROAT;
+            case VENTURI_CONSTANTS_SET_DIA_THROAT:
+              venturiConstantsType = VENTURI_CONSTANTS_SET_DIA_THROAT;
               numberSelector.setRange(0.01, 0.25, 0.001, false, 3);
-              numberSelector.setValue(venturi.throatDiameter);
+              numberSelector.setValue(venturi.getThroatDiameter());
               displayMeasurements();
              break;
+            case VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR:
+              venturiConstantsType = VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR;
+              numberSelector.setRange(0.01, 1.0, 0.01, false, 2);
+              numberSelector.setValue(venturi.getSmoothedFlowFactor());
+              displayMeasurements();
+              break;
           }
           break;
-        case SET_DIA_INLET:
-          venturi.inletDiameter = numberSelector.getValue();
-          venturi.areaInlet = M_PI * pow(venturi.inletDiameter / 2.0, 2);
-          venturi.betaRatio = venturi.throatDiameter / venturi.inletDiameter;
-          venturi.betaCoefficient = 1.0 - pow(venturi.betaRatio, 4);
-          saveFloat(KEY_VENTURI_INLET_DIAMETER, venturi.inletDiameter);
-          initNextMode(MT_SET_DIAMETERS);
+        case VENTURI_CONSTANTS_SET_DIA_INLET:
+          venturi.setInletDiameter(numberSelector.getValue());
+          saveFloat(KEY_VENTURI_INLET_DIAMETER, venturi.getInletDiameter());
+          initNextMode(MT_SET_VENTURI_CONSTANTS);
           break;
-        case SET_DIA_THROAT:
-          venturi.throatDiameter = numberSelector.getValue();
-          venturi.areaThroat = M_PI * pow(venturi.throatDiameter / 2.0, 2);
-          venturi.betaRatio = venturi.throatDiameter / venturi.inletDiameter;
-          venturi.betaCoefficient = 1.0 - pow(venturi.betaRatio, 4);
-          saveFloat(KEY_VENTURI_THROAT_DIAMETER, venturi.throatDiameter);
-          initNextMode(MT_SET_DIAMETERS);
-          break; 
+        case VENTURI_CONSTANTS_SET_DIA_THROAT:
+          venturi.setThroatDiameter(numberSelector.getValue());
+          saveFloat(KEY_VENTURI_THROAT_DIAMETER, venturi.getThroatDiameter());
+          initNextMode(MT_SET_VENTURI_CONSTANTS);
+          break;
+        case VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR:
+          venturi.setSmoothedFlowFactor(numberSelector.getValue());
+          saveFloat(KEY_VENTURI_SMOOTHING_FACTOR, venturi.getSmoothedFlowFactor());
+          initNextMode(MT_SET_VENTURI_CONSTANTS);
+          break;
       }
       break;  
   }
@@ -888,8 +887,8 @@ static void loopRotaryEncoder() {
         break;
       
       case MT_CAL_FLOW:
-        venturi.dischargeCoefficient = numberSelector.getValue();
-        displayTextNumber("Cd %.3f", venturi.dischargeCoefficient);
+        venturi.setDischargeCoefficient(numberSelector.getValue());
+        displayTextNumber("Cd %.3f", venturi.getDischargeCoefficient());
         break;
 
       case MT_TUNE_PID_FLOW:
@@ -950,16 +949,20 @@ static void loopRotaryEncoder() {
         // do nothing on encoder changes, only show progress during calibration
         break;
 
-      case MT_SET_DIAMETERS:
-        switch (setDiameterType) {
-          case SET_DIA_NONE:
-            displaySelectSetDiameter((SetDiameterType)(uint8_t)numberSelector.getValue());
+      case MT_SET_VENTURI_CONSTANTS:
+        switch (venturiConstantsType) {
+          case VENTURI_CONSTANTS_SET_NONE:
+            displaySelectVenturiConstants((VenturiConstantsType)(uint8_t)numberSelector.getValue());
             break;
-          case SET_DIA_INLET:
+          case VENTURI_CONSTANTS_SET_DIA_INLET:
             displayTextNumber("Inlet dia: %.3fm", numberSelector.getValue());
             break;
-          case SET_DIA_THROAT:
+          case VENTURI_CONSTANTS_SET_DIA_THROAT:
             displayTextNumber("Throat dia: %.3fm", numberSelector.getValue());
+            break;
+          case VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR:
+            venturi.setSmoothedFlowFactor(numberSelector.getValue());
+            displayTextNumber("Smooth factor: %.2f", venturi.getSmoothedFlowFactor());
             break;
         }
         break;  
@@ -1237,13 +1240,16 @@ static void displayMeasurements() {
       display.printf("Kd balance: %.2f", numberSelector.getValue());
     }     
   
-  } else if (modeType == MT_SET_DIAMETERS) {
-    if (setDiameterType == SET_DIA_INLET) {
+  } else if (modeType == MT_SET_VENTURI_CONSTANTS) {
+    if (venturiConstantsType == VENTURI_CONSTANTS_SET_DIA_INLET) {
       // display inlet diameter venturi
       display.printf("Inlet dia: %.3fm", numberSelector.getValue());
-    } else if (setDiameterType == SET_DIA_THROAT) {
+    } else if (venturiConstantsType == VENTURI_CONSTANTS_SET_DIA_THROAT) {
       // display throat diameter venturi
       display.printf("Throat dia: %.3fm", numberSelector.getValue());
+    } else if (venturiConstantsType == VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR) {
+      // display smoothing factor venturi
+      display.printf("Smooth factor: %.2f", numberSelector.getValue());
     }
   }
   readPressureSensors();
@@ -1321,10 +1327,10 @@ static void displaySelectMode(ModeType mtype) {
   display.print("Adjust sensor offsets");
   if (mtype == MT_ADJUST_OFFSETS) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
-  if (mtype == MT_SET_DIAMETERS) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  if (mtype == MT_SET_VENTURI_CONSTANTS) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 55);
-  display.print("Set venturi diameters");
-  if (mtype == MT_SET_DIAMETERS) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  display.print("Set venturi constants");
+  if (mtype == MT_SET_VENTURI_CONSTANTS) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
   display.display();
 }
 //////////////////////////////////////////////////////////////////////////
@@ -1385,143 +1391,31 @@ static void displaySelectTunePID(PidTuneType type) {
 }
 //////////////////////////////////////////////////////////////////////////
 
-static void displaySelectSetDiameter(SetDiameterType type) {
+static void displaySelectVenturiConstants(VenturiConstantsType type) {
   
   display.clearDisplay();
   display.setTextSize(1);
 
-  if (type == SET_DIA_NONE) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  if (type == VENTURI_CONSTANTS_SET_NONE) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 1);
   display.print("Back");
-  if (type == SET_DIA_NONE) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  if (type == VENTURI_CONSTANTS_SET_NONE) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
-  if (type == SET_DIA_INLET) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  if (type == VENTURI_CONSTANTS_SET_DIA_INLET) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 10);
   display.print("Set Inlet Dia");
-  if (type == SET_DIA_INLET) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  if (type == VENTURI_CONSTANTS_SET_DIA_INLET) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
-  if (type == SET_DIA_THROAT)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  if (type == VENTURI_CONSTANTS_SET_DIA_THROAT)  display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 19);
   display.print("Set Throat Dia");
-  if (type == SET_DIA_THROAT) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+  if (type == VENTURI_CONSTANTS_SET_DIA_THROAT) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
+
+  if (type == VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
+  display.setCursor(0, 28);
+  display.print("Set Smooth Factor");
+  if (type == VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   display.display();
 }
 //////////////////////////////////////////////////////////////////////////
-
-/**
- * Calculates the air density (Rho) based on temperature, pressure, and humidity.
- * @param tempC Temperature in Celsius of the BME280.
- * @param absPressurePa Absolute air pressure in Pascal of the BME280.
- * @param humidityPct Relative humidity in % of the BME280.
- */
-static void setRho(float tempC, float absPressurePa, float humidityPct) {
-
-    // --- 1. Air density calculate (humid air) ---
-    float T = tempC + 273.15; // Kelvin
-    float phi = humidityPct / 100.0;
-    
-    // Saturated vapor pressure (Magnus) and actual vapor pressure
-    float pSat = 610.78 * exp((17.27 * tempC) / (tempC + 237.3));
-    float pv = phi * pSat;
-    float pd = absPressurePa - pv;
-
-    // rho = (Pd / (Rd * T)) + (Pv / (Rv * T))
-    rho = (pd / (287.058 * T)) + (pv / (461.495 * T));
-}
-//////////////////////////////////////////////////////////////////////////
-
-// This function calculates the actual air density and uses it to determine the volumetric flow through the Venturi.
-
-/**
- * Berekent de volumestroom (m3/h) gecorrigeerd voor temp, druk en vochtigheid.
- * @param deltaP De gemeten druk van de SDP800 in Pascal (Pa).
- * @param tempC Temperatuur in Celsius van de BME280.
- * @param absPressurePa Absolute luchtdruk in Pascal van de BME280.
- * @param humidityPct Relatieve vochtigheid in % van de BME280.
- */
-float getFlow(float deltaP) {
-    if (deltaP <= 0) return 0.0;
-
-    // --- 1. get density air
-    // float rho = getRho(tempC, absPressurePa, humidityPct);
-
-    // --- 2. Venturi Constants ---
-    // const float D = 0.116;      // Inlet diameter (m)
-    // const float d = 0.087;      // Throat diameter (m)
-    // const float Cd = 0.975;     // Discharge coefficient (adjust after calibration)    
-    // const float beta = d / D;
-    // const float Cb = 1 - pow(beta, 4);
-    // const float A2 = (PI * pow(d, 2)) / 4.0;
-    
-    // The Flow Formule (Bernoulli + continuity)
-    // Q = Cd * A2 * sqrt( (2 * deltaP) / (rho * (1 - beta^4)) )
-    float velocityThroat = sqrt((2 * deltaP) / (rho * venturi.betaCoefficient));
-    float flowM3s = venturi.dischargeCoefficient * venturi.areaThroat * velocityThroat;
-
-    return flowM3s * 3600.0; // convert to m3/h
-}
-//////////////////////////////////////////////////////////////////////////
-
-/**
-  *                    ____________
-  *                  /  dP * T
-  * Q  = 0.17228 \  / ____________  (m³/s)
-  *               \/      Pabs
-  *
-  *                                  ____________ 
-  *                                 /  dP * T  
-  * Q = 3600 x 0.17228 = 620.21 \  / ____________  (m³/h)
-  *                              \/      Pabs
-  * 
-*/
-
-/*
-static float calculateFlowCompensated(float dP) {
-  float Pabs = pressureAbsolute.get() * 100.0;
-  float Tamb = temperatureAmbient.get() + 273.15;
-
-  return dP > 0.0 ? Cf * sqrt(dP * Tamb / Pabs) : 0.0; // (m³/h)
-}
-/////////////////////////////////////////////////////////////////////////*/
-
-// This function calculates the actual air density and uses it to determine the volumetric flow through the Venturi.
-
-/**
- * Calculates the volumetric flow (m3/h) corrected for temperature, pressure, and humidity.
- * @param deltaP The measured pressure of the SDP800 in Pascal (Pa).
- * @param tempC Temperature in Celsius of the BME280.
- * @param absPressurePa Absolute air pressure in Pascal of the BME280.
- * @param humidityPct Relative humidity in % of the BME280.
- */
-float _getCompensatedFlow(float deltaP, float tempC, float absPressurePa, float humidityPct) {
-    if (deltaP <= 0) return 0.0;
-
-    // --- 1. air density calculate (humid air) ---
-    float T = tempC + 273.15; // Kelvin
-    float phi = humidityPct / 100.0;
-    
-    // Saturated vapor pressure (Magnus) and actual vapor pressure
-    float pSat = 610.78 * exp((17.27 * tempC) / (tempC + 237.3));
-    float pv = phi * pSat;
-    float pd = absPressurePa - pv;
-
-    // rho = (Pd / (Rd * T)) + (Pv / (Rv * T))
-    float rho = (pd / (287.058 * T)) + (pv / (461.495 * T));
-
-    // --- 2. Venturi Constants ---
-    const float D = 0.120;      // Inlet diameter (m)
-    const float d = 0.090;      // Throat diameter (m)
-    const float Cd = 0.975;     // Discharge coefficient (after calibration)
-    
-    float beta = d / D;
-    float areaThroat = (PI * pow(d, 2)) / 4.0;
-
-    // --- 3. De Flow Formule (Bernoulli and continuity equation) ---
-    // Q = Cd * A2 * sqrt( (2 * deltaP) / (rho * (1 - beta^4)) )
-    float velocityThroat = sqrt((2 * deltaP) / (rho * (1 - pow(beta, 4))));
-    float flowM3s = Cd * areaThroat * velocityThroat;
-
-    return flowM3s * 3600.0; // convert to m3/h
-}
-

@@ -8,7 +8,7 @@ typedef enum {
   MT_TUNE_PID_FLOW = 4,
   MT_TUNE_PID_BALANCE = 5,
   MT_ADJUST_OFFSETS = 6,
-  MT_SET_DIAMETERS = 7,
+  MT_SET_VENTURI_CONSTANTS = 7,
 } ModeType;
 extern ModeType modeType;
 
@@ -35,27 +35,18 @@ typedef enum {
 extern PidTuneType pidTuneType;
 
 typedef enum {
-  SET_DIA_NONE = 0,
-  SET_DIA_INLET = 1,
-  SET_DIA_THROAT = 2,
-} SetDiameterType;
-extern SetDiameterType setDiameterType;
-
-typedef struct {
-  float inletDiameter; // Diameter of the inlet of the venturi in meters
-  float throatDiameter; // Diameter of the throat in meters
-  float areaInlet; // Cross-sectional area of the inlet in square meters
-  float areaThroat; // Cross-sectional area of the throat in square meters
-  float betaRatio; // Ratio of throat diameter to inlet diameter (dimensionless)
-  float betaCoefficient; // Coefficient for calculating beta ratio effects (1 - pow(betaRatio, 4))
-  float dischargeCoefficient; // Discharge coefficient of the venturi (dimensionless)
-} VenturiConstants;
-extern VenturiConstants venturi;
+  VENTURI_CONSTANTS_SET_NONE = 0,
+  VENTURI_CONSTANTS_SET_DIA_INLET = 1,
+  VENTURI_CONSTANTS_SET_DIA_THROAT = 2,
+  VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR = 3,
+} VenturiConstantsType;
+extern VenturiConstantsType venturiConstantsType;
 
 // Keys for saving settings in non-volatile storage
 #define KEY_VENTURI_INLET_DIAMETER "inletDia"
 #define KEY_VENTURI_THROAT_DIAMETER "throadDia"
 #define KEY_VENTURI_CD "Cd"
+#define KEY_VENTURI_SMOOTHING_FACTOR "smoothFactor"
 #define KEY_OFFSET_BALANCE_PRESSURE_SENSOR "offsetBalance"
 #define KEY_OFFSET_VENTURI_PRESSURE_SENSOR "offsetVenturi"
 #define KEY_KP_FLOW "KpFlow"
