@@ -59,10 +59,13 @@ extern VenturiConstantsType venturiConstantsType;
 // PID controller parameters
 #define PID_KP_MIN 0.0
 #define PID_KP_MAX 50.0
-#define PID_KP_STEP 0.1
+#define PID_KP_STEP 0.01
+#define PID_KP_DECIMALS 2
 #define PID_KI_MIN 0.0
 #define PID_KI_MAX 50.0
-#define PID_KI_STEP 0.1
+#define PID_KI_STEP 0.01
+#define PID_KI_DECIMALS 2
 #define PID_KD_MIN 0.0
 #define PID_KD_MAX 50.0
-#define PID_KD_STEP 0.1
+#define PID_KD_STEP 0.01
+#define PID_KD_DECIMALS 2

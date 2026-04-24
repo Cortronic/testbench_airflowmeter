@@ -20,15 +20,15 @@ class Venturi {
         setRho(absPressurePa, tempC, humidityPct);
       }
       if (deltaP <= 0) {
-        _smoothedFlow = 0.0;
+        _smoothedFlow = _flow = 0.0;
         return;
       }
       if (_smoothedFlow == 0.0) {
-        _smoothedFlow = getFlow(deltaP); // Initialize smoothed flow with the first reading
+        _smoothedFlow = _flow = getFlow(deltaP); // Initialize smoothed flow with the first reading
       } else {
-        float flow = getFlow(deltaP);
+        _flow = getFlow(deltaP);
         // Optional: Implement flow smoothing here if needed
-        _smoothedFlow = _smoothedFlow * (1.0 - _smoothedFlowFactor) + flow * _smoothedFlowFactor; // Simple exponential smoothing
+        _smoothedFlow = _flow * _smoothedFlowFactor + _smoothedFlow * (1.0 - _smoothedFlowFactor); // Simple exponential smoothing
       }  
     }
     float setRho(float absPressurePa, float tempC=20.0, float humidityPct=50.0) {
@@ -44,6 +44,9 @@ class Venturi {
       // Calculate the density of humid air
       _rho = (P - E) / (R * T) + E / (461.495 * T); // 461.495 is the specific gas constant for water vapor
       return _rho;  // return the density in kg/m³
+    }
+    float getFlow () {
+      return _flow;
     }
     float getFlow(float deltaP) {
       if (deltaP <= 0) return 0.0;
@@ -93,6 +96,7 @@ class Venturi {
     float _betaCoefficient;      // Cb = 1 - (d/D)^4
     float _areaThroat;           // A2 = π * (d/2)^2
     float _rho = 1.225;          // Air density in kg/m³ (at standard conditions)
+    float _flow = 0.0;         // Current flow in m³/h
     float _smoothedFlow = 0.0;   // For flow smoothing (optional)
     float _smoothedFlowFactor = 0.1; // Smoothing factor for exponential smoothing
 };
