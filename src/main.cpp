@@ -2,7 +2,6 @@
 #include "venturi.h"
 #include "fan.h"
 #include "PidController.h"
-#include <pid.h>
 #include <Arduino.h>
 #include <Wire.h>
 #include <Preferences.h>
