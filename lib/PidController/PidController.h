@@ -4,25 +4,23 @@
 #include "DoubleExponentialFilter.h"
 
 class PidController{
-  private:
-    double _kp, _ki, _kd;
-    double _dt;
-    double _setpoint;
-    double _output;
-    double _integral;
-    double _minOutput, _maxOutput;
-    DoubleExponentialFilter *_filter;
-
+  
   public:
-    PidController(double kp, double ki, double kd, double dt, double setpoint, double minOutput, double maxOutput);
+    typedef enum {
+      DIRECT = 0,
+      REVERSE = 1,
+    } Direction;
+
+    PidController(double kp, double ki, double kd, double dt, double minOutput, double maxOutput);
     ~PidController();
     float update(double pressure);
     void reset() { _integral = 0; _filter->reset(); }
     double getOutput() const { return _output; }
     void setSetpoint(double sp) { _setpoint = sp; }
-    void setTunings(double kp, double ki, double kd) { _kp = kp; _ki = ki; _kd = kd; }
+    void setTunings(double kp, double ki, double kd);
     void setOutputLimits(double minOut, double maxOut) { _minOutput = minOut; _maxOutput = maxOut; }
     void setSampleTime(double dt) { _dt = dt; } // in seconds
+    void setControllerDirection(Direction dir);
 
     double getLevel() const { return _filter->getLevel(); }
     double getTrend() const { return _filter->getTrend(); }
@@ -34,6 +32,15 @@ class PidController{
     double getDamping() const { return _filter->getDamping(); }
     void setTrendLimit(double limit) { _filter->setTrendLimit(limit); }
     double getTrendLimit() const { return _filter->getTrendLimit(); }
-    
+
+  private:
+    double _kp, _ki, _kd;
+    double _dt;
+    double _setpoint;
+    double _output;
+    double _integral;
+    double _minOutput, _maxOutput;
+    Direction _controllerDirection;
+    DoubleExponentialFilter *_filter;    
 };
 #endif // PIDCONTROLLER_H

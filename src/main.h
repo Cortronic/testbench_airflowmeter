@@ -65,7 +65,7 @@ extern VenturiConstantsType venturiConstantsType;
 #define KEY_KD_BALANCE "KdBalance"
 #define KEY_BALANCE_ALPHA "balanceAlpha"
 #define KEY_BALANCE_BETA "balanceBeta"
-#define KEY_BALANCE_DAMPING     "balanceDamping"
+#define KEY_BALANCE_DAMPING "balanceDamping"
 #define KEY_BALANCE_TREND_LIMIT "balanceTrendLim"
 
 // PID controller parameters
