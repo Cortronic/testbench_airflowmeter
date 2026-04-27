@@ -31,6 +31,10 @@ typedef enum {
   PID_TUNE_P = 1,
   PID_TUNE_I = 2,
   PID_TUNE_D = 3,
+  PID_TUNE_ALPHA = 4,
+  PID_TUNE_BETA = 5,
+  PID_TUNE_DAMPING = 6,
+  PID_TUNE_TREND_LIMIT = 7,
 } PidTuneType;
 extern PidTuneType pidTuneType;
 
@@ -52,9 +56,17 @@ extern VenturiConstantsType venturiConstantsType;
 #define KEY_KP_FLOW "KpFlow"
 #define KEY_KI_FLOW "KiFlow"
 #define KEY_KD_FLOW "KdFlow"
+#define KEY_ALPHA_FLOW "flowAlpha"
+#define KEY_BETA_FLOW "flowBeta"
+#define KEY_DAMPING_FLOW "flowDamping"
+#define KEY_TREND_LIMIT_FLOW "flowTrendLimit"
 #define KEY_KP_BALANCE "KpBalance"
 #define KEY_KI_BALANCE "KiBalance"
 #define KEY_KD_BALANCE "KdBalance"
+#define KEY_BALANCE_ALPHA "balanceAlpha"
+#define KEY_BALANCE_BETA "balanceBeta"
+#define KEY_BALANCE_DAMPING     "balanceDamping"
+#define KEY_BALANCE_TREND_LIMIT "balanceTrendLim"
 
 // PID controller parameters
 #define PID_KP_MIN 0.0
@@ -69,3 +81,19 @@ extern VenturiConstantsType venturiConstantsType;
 #define PID_KD_MAX 50.0
 #define PID_KD_STEP 0.01
 #define PID_KD_DECIMALS 2
+#define ALPHA_MIN 0.0
+#define ALPHA_MAX 1.0
+#define ALPHA_STEP 0.01
+#define ALPHA_DECIMALS 2
+#define BETA_MIN 0.0
+#define BETA_MAX 1.0
+#define BETA_STEP 0.01
+#define BETA_DECIMALS 2
+#define DAMPING_MIN 0.0
+#define DAMPING_MAX 1.0
+#define DAMPING_STEP 0.01
+#define DAMPING_DECIMALS 2
+#define TREND_LIMIT_MIN 0.0
+#define TREND_LIMIT_MAX 100.0
+#define TREND_LIMIT_STEP 0.1
+#define TREND_LIMIT_DECIMALS 1
