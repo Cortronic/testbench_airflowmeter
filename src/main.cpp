@@ -70,7 +70,6 @@ AiEsp32RotaryEncoderNumberSelector numberSelector = AiEsp32RotaryEncoderNumberSe
 
 Preferences preferences;
 
-Smoothed<float> venturiPressure;
 Smoothed<float> balancePressure;
 Smoothed<float> pressureAbsolute;
 Smoothed<float> temperatureAmbient;
@@ -148,7 +147,7 @@ void setup() {
   pinMode(FAN_ON_PIN, OUTPUT);
   digitalWrite(FAN_ON_PIN, LOW);
 
-  setupTachometers();
+  //setupTachometers();
 
   // load preferences (calibration and PID parameters)
   loadPreferences();
@@ -156,8 +155,8 @@ void setup() {
   // setup RotaryEncoder
   setupRotaryEncoder();
 
-  // configure PWM
-  Serial.println("Setup PWM");
+  // Setup Fans
+  Serial.println("Setup Fans");
   pullFan.begin();
   pushFan.begin();
 
@@ -166,7 +165,7 @@ void setup() {
   setSlaveFanSpeedPercent(0);
   delay(1000);
 
-  // Start both busses
+  // Start both I2C busses
   I2C_A.begin(I2C_SDA0_PIN, I2C_SCL0_PIN, 700000);   // SDA, SCL
   I2C_B.begin(I2C_SDA1_PIN, I2C_SCL1_PIN, 100000);
 
@@ -185,7 +184,6 @@ void setup() {
 
   Serial.println("setup smoothed average.");
   balancePressure.begin(SMOOTHED_EXPONENTIAL, 10);
-  venturiPressure.begin(SMOOTHED_AVERAGE, 10);
   calibration.begin(SMOOTHED_AVERAGE, 200);
   pressureAbsolute.begin(SMOOTHED_AVERAGE, 40);
   humidityAmbient.begin(SMOOTHED_AVERAGE, 40);
@@ -214,12 +212,17 @@ void setup() {
   pidBalance.setTrendLimit(balanceTrendLimit);
   delay(500);
 
+  // get initial measurements from the sensors to populate the smoothed averages and the venturi flow calculation
+  bme280.takeForcedMeasurement();
+  pressureAbsolute.add(bme280.readPressure());
+  temperatureAmbient.add(bme280.readTemperature());
+  humidityAmbient.add(bme280.readHumidity());
+  venturi.setRho(pressureAbsolute.get(), temperatureAmbient.get(), humidityAmbient.get());
+
+  // Setup timer interrupt for tachometer reading, flow and balance pressure PID loops
   Serial.print("Setup timer interrupt\n");
   setupTimer0();
   delay(500);
-
-  bme280.takeForcedMeasurement();
-  venturi.setRho(bme280.readPressure(), bme280.readTemperature(), bme280.readHumidity());
   
   Serial.print("\n Setup done...\n\n");
   delay(500);
@@ -231,6 +234,7 @@ void loop() {
   static uint32_t last_millis = 0;
   uint32_t now = millis();
   
+  // repeated calls are needed to avoid that the display slows down the loop and causes the PID to underperform
   readPressureSensors();
 
   loopRotaryEncoder();
@@ -238,10 +242,6 @@ void loop() {
   // every 100ms
   if (now >= last_millis + 100) {
     last_millis = now;
-
-    readPressureSensors();
-
-    venturi.loop(venturiPressure.get());
 
     readPressureSensors();
     
@@ -259,13 +259,12 @@ void loop() {
       readPressureSensors();
       humidityAmbient.add(bme280.readHumidity());
       readPressureSensors();
-
-      Serial.printf("Flow: %.1f m3/s\n", venturi.getFlow());
+      
+      /* Serial.printf("Flow: %.1f m3/s\n", venturi.getLastFlow());
       Serial.printf("Dutycycle Masterfan: %.1f%%\n", outputMasterFan);
       Serial.printf("Balance Pressure: %.1f Pa\n", balancePressure.get());
       Serial.printf("Dutycycle Slavefan: %.1f%%\n", outputPidBalanceFan);
-
-      readPressureSensors();
+      readPressureSensors(); // */
     }
 
     // every minute
@@ -365,10 +364,10 @@ static void readPressureSensors() {
     uint16_t error = sdpVenturi.readMeasurement(differentialPressure, temperature);
     if (error) {
       Serial.print("Error trying to execute readMeasurement from Venturi Pressure sensor");
-      venturiPressure.add(0.0);
+      venturi.loop(0.0);
     } else {
       differentialPressure -= offsetVenturiPressure;
-      venturiPressure.add(differentialPressure);
+      venturi.loop(differentialPressure);
       if (modeType != MT_ADJUST_OFFSETS) {
         if (operatingMode == OM_FLOW_PULL_FAN || operatingMode == OM_FLOW_PUSH_FAN) {
           outputMasterFan = pidFlow.update(differentialPressure);

@@ -9,8 +9,8 @@ class Venturi {
     void  begin(float inletDiameter, float throatDiameter, float dischargeCoefficient); 
     void  loop(float deltaP,  float absPressurePa=0, float tempC=20.0, float humidityPct=50.0);
     float setRho(float absPressurePa, float tempC=20.0, float humidityPct=50.0);
-    float getFlow () { return _flow; }
     float getFlow(float deltaP);
+    float getLastFlow () { return _flow; }
     float getSmoothedFlow() const { return _smoothedFlow; }
     void  setInletDiameter(float diameter);
     float getInletDiameter() const { return _inletDiameter; }
