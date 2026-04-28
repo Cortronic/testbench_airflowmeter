@@ -47,9 +47,9 @@ const int PWM_RESOLUTION = 10; // 10-bit resolution (0-1023)
 const int PWM_DITHER_RESOLUTION = 2; // 2-bit resolution for dithering (0-3)
 
 // tachometer
-volatile uint32_t tachoFanPulseCycles = 300;
-volatile uint32_t tachoPushFanPulseCount = 0;
-volatile uint32_t tachoPullFanPulseCount = 0;
+volatile uint32_t tachoFanPulseCycles;
+volatile uint32_t tachoPushFanPulseCount;
+volatile uint32_t tachoPullFanPulseCount;
 volatile uint32_t tachoPullFanRPM = 0;
 volatile uint32_t tachoPushFanRPM = 0;
 
@@ -92,7 +92,7 @@ Adafruit_SH1106G display(128, 64, &I2C_A);
 Adafruit_BME280  bme280;     // I2C
 
 hw_timer_t *timer0 = nullptr;
-volatile bool ms10_passed = false;
+volatile bool ms20_passed = false;
 
 FollowFanType followFanType = FOLLOW_PULL_FAN;
 ModeType modeType = MT_OPERATION;
@@ -103,11 +103,12 @@ VenturiConstantsType venturiConstantsType = VENTURI_CONSTANTS_SET_NONE;
 double outputMasterFan = 0.0;
 double KpFlow=2, KiFlow=0, KdFlow=0;
 double flowAlpha=0.2, flowBeta=0.02, flowDamping=0.95, flowTrendLimit=5;
-PidController pidFlow(KpFlow, KiFlow, KdFlow, 0.01, 0.0, 100.0);
+PidController pidFlow(KpFlow, KiFlow, KdFlow, 0.02, 0.0, 100.0);
+
 double outputPidBalanceFan = 0.0;
 double KpBalance=6, KiBalance=3, KdBalance=0;
 double balanceAlpha=0.2, balanceBeta=0.02, balanceDamping=0.95, balanceTrendLimit=5;
-PidController pidBalance(KpBalance, KiBalance, KdBalance, 0.01, 0.0, 100.0);
+PidController pidBalance(KpBalance, KiBalance, KdBalance, 0.02, 0.0, 100.0);
 
 float offsetVenturiPressure = 0.0;
 float offsetBalancePressure = 0.0;
@@ -194,7 +195,7 @@ void setup() {
   Serial.println("turn the PID Flow on.");
   pidFlow.setTunings(KpFlow, KiFlow, KdFlow);
   pidFlow.setOutputLimits(0, 100.0); // Output will be in percentage of max PWM (0-100%)
-  pidFlow.setSampleTime(0.01); // 10 ms sample time
+  pidFlow.setSampleTime(0.02); // 20 ms sample time
   pidFlow.setAlpha(flowAlpha);
   pidFlow.setBeta(flowBeta);
   pidFlow.setDamping(flowDamping);
@@ -204,12 +205,12 @@ void setup() {
   // initialize the Balance PID variables
   Serial.println("turn the PID Balance on.");
   pidBalance.setTunings(KpBalance, KiBalance, KdBalance);
-  pidBalance.setOutputLimits(0, 100);
-  pidBalance.setSampleTime(0.01);
-  pidBalance.setAlpha(balanceAlpha);
-  pidBalance.setBeta(balanceBeta);
-  pidBalance.setDamping(balanceDamping);
-  pidBalance.setTrendLimit(balanceTrendLimit);
+  pidBalance.setOutputLimits(0, 100); // Output will be in percentage of max PWM (0-100%)
+  pidBalance.setSampleTime(0.02); // 20 ms sample time
+  pidBalance.setAlpha(balanceAlpha); // Set the alpha parameter for the exponential moving average filter
+  pidBalance.setBeta(balanceBeta); // Set the beta parameter for trend estimation
+  pidBalance.setDamping(balanceDamping); // Set the damping factor to smooth the response (0.95 means 5% of the new value is added to the smoothed value)
+  pidBalance.setTrendLimit(balanceTrendLimit); // Set the trend limit to prevent excessive influence of the trend on the output
   delay(500);
 
   // get initial measurements from the sensors to populate the smoothed averages and the venturi flow calculation
@@ -291,19 +292,18 @@ void loop() {
 // Interrupt Service Routine (ISR)
 // IRAM_ATTR places the function in RAM for faster execution
 void IRAM_ATTR Timer0_ISR() {
-  ms10_passed = true;
+  ms20_passed = true;
+  
+  pushFan.handleDither(); // Call the handleDither method for the push fan to manage PWM dithering
+  pullFan.handleDither(); // Call the handleDither method for the pull fan to manage PWM dithering
+  
+  // Handle tachometer pulse counting and RPM calculation
   if (--tachoFanPulseCycles == 0) {
     tachoPullFanRPM = tachoPullFanPulseCount * 10;
     tachoPullFanPulseCount = 0;
     tachoPushFanRPM = tachoPushFanPulseCount * 10;
     tachoPushFanPulseCount = 0;
-    tachoFanPulseCycles = 300;
-  }
-
-  if (tachoFanPulseCycles % 2 == 0) { // every 20ms
-    pushFan.handleDither();
-  } else { // every 20ms
-    pullFan.handleDither();
+    tachoFanPulseCycles = 150;
   }
 }
 //////////////////////////////////////////////////////////////////////////
@@ -329,6 +329,9 @@ void IRAM_ATTR tachoPushFanPulseCount_ISR() {
 //////////////////////////////////////////////////////////////////////////
 
 static void setupTachometers() {
+  tachoPushFanPulseCount = 0;
+  tachoPullFanPulseCount = 0;
+  tachoFanPulseCycles = 150;
   pinMode(FAN_PULL_TACHO_PIN, INPUT_PULLUP); // GPIO 34
   attachInterrupt(digitalPinToInterrupt(FAN_PULL_TACHO_PIN), tachoPullFanPulseCount_ISR, FALLING);
   pinMode(FAN_PUSH_TACHO_PIN, INPUT_PULLUP); // GPIO 35
@@ -345,9 +348,9 @@ static void setupTimer0() {
   // 2. Attach the ISR function
   timerAttachInterrupt(timer0, &Timer0_ISR, true);
 
-  // 3. Set alarm to fire every 10000 ticks (10000 us = 10ms)
+  // 3. Set alarm to fire every 20000 ticks (20000 us = 20ms)
   // timerAlarmWrite(timer, microseconds, autoreload)
-  timerAlarmWrite(timer0, 10000, true);
+  timerAlarmWrite(timer0, 20000, true);
 
   // 4. Enable the alarm
   timerAlarmEnable(timer0);
@@ -356,8 +359,8 @@ static void setupTimer0() {
 
 static void readPressureSensors() {
   
-  if (ms10_passed == true) {
-    ms10_passed = false;
+  if (ms20_passed == true) {
+    ms20_passed = false;
     float differentialPressure, temperature;
 
     // 2 ms time to read
