@@ -13,13 +13,13 @@ void Venturi::begin(float inletDiameter, float throatDiameter, float dischargeCo
   _areaThroat = (PI * pow(throatDiameter, 2)) / 4.0;
 }
 
-void Venturi::loop(float deltaP,  float absPressurePa, float tempC, float humidityPct) {
+float Venturi::update(float deltaP,  float absPressurePa, float tempC, float humidityPct) {
   if (absPressurePa > 0) {   
     setRho(absPressurePa, tempC, humidityPct);
   }
   if (deltaP <= 0) {
     _smoothedFlow = _flow = 0.0;
-    return;
+    return 0.0;
   }
   if (_smoothedFlow == 0.0) {
     _smoothedFlow = _flow = getFlow(deltaP); // Initialize smoothed flow with the first reading
@@ -28,6 +28,7 @@ void Venturi::loop(float deltaP,  float absPressurePa, float tempC, float humidi
     // Optional: Implement flow smoothing here if needed
     _smoothedFlow = _flow * _smoothedFlowFactor + _smoothedFlow * (1.0 - _smoothedFlowFactor); // Simple exponential smoothing
   }  
+  return _flow;
 }
 
 float Venturi::setRho(float absPressurePa, float tempC, float humidityPct) {

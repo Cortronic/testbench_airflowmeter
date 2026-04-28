@@ -364,13 +364,13 @@ static void readPressureSensors() {
     uint16_t error = sdpVenturi.readMeasurement(differentialPressure, temperature);
     if (error) {
       Serial.print("Error trying to execute readMeasurement from Venturi Pressure sensor");
-      venturi.loop(0.0);
+      venturi.update(0.0);
     } else {
       differentialPressure -= offsetVenturiPressure;
-      venturi.loop(differentialPressure);
+      float venturiFlow = venturi.update(differentialPressure);
       if (modeType != MT_ADJUST_OFFSETS) {
         if (operatingMode == OM_FLOW_PULL_FAN || operatingMode == OM_FLOW_PUSH_FAN) {
-          outputMasterFan = pidFlow.update(differentialPressure);
+          outputMasterFan = pidFlow.update(venturiFlow);
           setMasterFanSpeedPercent(outputMasterFan);
         }
       }

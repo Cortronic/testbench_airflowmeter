@@ -7,7 +7,7 @@ class Venturi {
     Venturi() {}
     Venturi(float inletDiameter, float throatDiameter, float dischargeCoefficient = 0.975);
     void  begin(float inletDiameter, float throatDiameter, float dischargeCoefficient); 
-    void  loop(float deltaP,  float absPressurePa=0, float tempC=20.0, float humidityPct=50.0);
+    float update(float deltaP,  float absPressurePa=0, float tempC=20.0, float humidityPct=50.0);
     float setRho(float absPressurePa, float tempC=20.0, float humidityPct=50.0);
     float getFlow(float deltaP);
     float getLastFlow () { return _flow; }
