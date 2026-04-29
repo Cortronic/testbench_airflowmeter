@@ -386,7 +386,8 @@ static void readPressureSensors() {
     } else {
       differentialPressure -= offsetBalancePressure;
       balancePressure.add(differentialPressure);
-      setSlaveFanSpeedPercent(pidBalance.update(differentialPressure)); 
+      setSlaveFanSpeedPercent(pidBalance.update(differentialPressure));
+      Serial.printf("Balance Pressure: %.1f Pa, Slave Fan Output: %.1f%%\r", balancePressure.get(), outputPidBalanceFan); 
     }
   }
 }
