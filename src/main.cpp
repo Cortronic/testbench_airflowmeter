@@ -105,6 +105,10 @@ double KpFlow=2, KiFlow=0, KdFlow=0;
 double flowAlpha=0.2, flowBeta=0.02, flowDamping=0.95, flowTrendLimit=5;
 PidController pidFlow(KpFlow, KiFlow, KdFlow, 0.02, 0.0, 100.0);
 
+double minBalancePressure = NAN;
+double maxBalancePressure = NAN;
+double minBalanceFanOutput = NAN;
+double maxBalanceFanOutput = NAN;
 double outputPidBalanceFan = 0.0;
 double KpBalance=6, KiBalance=3, KdBalance=0;
 double balanceAlpha=0.2, balanceBeta=0.02, balanceDamping=0.95, balanceTrendLimit=5;
@@ -267,13 +271,23 @@ void loop() {
       Serial.printf("Dutycycle Slavefan: %.1f%%\n", outputPidBalanceFan);
       readPressureSensors(); // */
     }
-
-    // every minute
-    if (loopcnt % 600 == 0) {
-       venturi.setRho(pressureAbsolute.get(), temperatureAmbient.get(), humidityAmbient.get());
-       readPressureSensors();
-    }
     
+    // every second
+    if (loopcnt % 10 == 0) {
+      Serial.printf(
+        "balance: %.1f%%, %.1f%%, %.1fpa, %.1fpa  \r",
+        minBalanceFanOutput,
+        maxBalanceFanOutput,
+        minBalancePressure,
+        maxBalancePressure
+      );
+      minBalanceFanOutput = NAN;
+      maxBalanceFanOutput = NAN;
+      minBalancePressure = NAN;
+      maxBalancePressure = NAN;
+      readPressureSensors();
+    }
+
     // every 2 seconds
     if (loopcnt % 20 == 0) {
       if (modeType == MT_OPERATION 
@@ -282,6 +296,12 @@ void loop() {
       ) {
         displayMeasurements(); // 42ms
       }
+    }
+
+    // every minute
+    if (loopcnt % 600 == 0) {
+       venturi.setRho(pressureAbsolute.get(), temperatureAmbient.get(), humidityAmbient.get());
+       readPressureSensors();
     }
 
     ++loopcnt;
@@ -388,7 +408,18 @@ static void readPressureSensors() {
       balancePressure.add(differentialPressure);
       outputPidBalanceFan = pidBalance.update(differentialPressure);
       setSlaveFanSpeedPercent(outputPidBalanceFan);
-      Serial.printf("Balance Pressure: %.1f Pa, Slave Fan Output: %.1f%%\r", differentialPressure, outputPidBalanceFan); 
+      if (isnan(minBalancePressure) || differentialPressure < minBalancePressure) {
+        minBalancePressure = differentialPressure;
+      }
+      if (isnan(maxBalancePressure) || differentialPressure > maxBalancePressure) {
+        maxBalancePressure = differentialPressure;
+      }
+      if (isnan(minBalanceFanOutput) || outputPidBalanceFan < minBalanceFanOutput) {
+        minBalanceFanOutput = outputPidBalanceFan;
+      }
+      if (isnan(maxBalanceFanOutput) || outputPidBalanceFan > maxBalanceFanOutput) {
+        maxBalanceFanOutput = outputPidBalanceFan;
+      }
     }
   }
 }

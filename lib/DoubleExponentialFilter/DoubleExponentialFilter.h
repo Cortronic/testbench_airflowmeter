@@ -27,8 +27,8 @@ class DoubleExponentialFilter {
 
     double update(double newValue) {
       if (_count == 0) {
-        _level = newValue;
         _trend = 0.0;
+        _level = newValue;
         _count++;
       } else if (_count == 1) {
         _trend = newValue - _level;
