@@ -101,7 +101,7 @@ OperatingMode operatingMode = OM_SPEED_PULL_FAN;
 VenturiConstantsType venturiConstantsType = VENTURI_CONSTANTS_SET_NONE;
 
 double outputMasterFan = 0.0;
-double KpFlow=2, KiFlow=0, KdFlow=0;
+double KpFlow=2, KiFlow=0, KdFlow=0, flowOutputTrendLimit=0.5;
 double flowAlpha=0.2, flowBeta=0.02, flowDamping=0.95, flowTrendLimit=5;
 PidController pidFlow(KpFlow, KiFlow, KdFlow, 0.02, 0.0, 100.0);
 
@@ -110,7 +110,7 @@ double maxBalancePressure = NAN;
 double minBalanceFanOutput = NAN;
 double maxBalanceFanOutput = NAN;
 double outputPidBalanceFan = 0.0;
-double KpBalance=6, KiBalance=3, KdBalance=0;
+double KpBalance=6, KiBalance=3, KdBalance=0, balanceOutputTrendLimit=0.5;
 double balanceAlpha=0.2, balanceBeta=0.02, balanceDamping=0.95, balanceTrendLimit=5;
 PidController pidBalance(KpBalance, KiBalance, KdBalance, 0.02, 0.0, 100.0);
 
@@ -198,7 +198,7 @@ void setup() {
   // initialize the Flow PID variables
   Serial.println("turn the PID Flow on.");
   pidFlow.setTunings(KpFlow, KiFlow, KdFlow);
-  pidFlow.setOutputLimits(0, 100.0); // Output will be in percentage of max PWM (0-100%)
+  pidFlow.setOutputLimits(0, 100.0, flowOutputTrendLimit); // Output will be in percentage of max PWM (0-100%)
   pidFlow.setSampleTime(0.02); // 20 ms sample time
   pidFlow.setAlpha(flowAlpha);
   pidFlow.setBeta(flowBeta);
@@ -209,7 +209,7 @@ void setup() {
   // initialize the Balance PID variables
   Serial.println("turn the PID Balance on.");
   pidBalance.setTunings(KpBalance, KiBalance, KdBalance);
-  pidBalance.setOutputLimits(0, 100); // Output will be in percentage of max PWM (0-100%)
+  pidBalance.setOutputLimits(0, 100, balanceOutputTrendLimit); // Output will be in percentage of max PWM (0-100%)
   pidBalance.setSampleTime(0.02); // 20 ms sample time
   pidBalance.setAlpha(balanceAlpha); // Set the alpha parameter for the exponential moving average filter
   pidBalance.setBeta(balanceBeta); // Set the beta parameter for trend estimation
@@ -386,7 +386,7 @@ static void readPressureSensors() {
     // 2 ms time to read
     uint16_t error = sdpVenturi.readMeasurement(differentialPressure, temperature);
     if (error) {
-      Serial.print("Error trying to execute readMeasurement from Venturi Pressure sensor");
+      Serial.print("Error trying to execute readMeasurement from Venturi Pressure sensor\n");
       venturi.update(0.0);
     } else {
       differentialPressure -= offsetVenturiPressure;

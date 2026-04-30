@@ -2,7 +2,8 @@
 
 PidController::PidController(double kp, double ki, double kd, double dt, double minOutput, double maxOutput)
   : _kp(kp), _ki(ki), _kd(kd)
-  , _dt(dt), _setpoint(0), _output(0)
+  , _dt(dt), _setpoint(0),
+   _output(0), _lastOutput(0)
   , _integral(0)
   , _minOutput(minOutput), _maxOutput(maxOutput)
   , _controllerDirection(DIRECT) {
@@ -48,6 +49,9 @@ float PidController::update(double input) {
   // 4. Definitieve output berekenen en clampen
   _output = pTerm + _integral - dTerm;
   _output = _output > _maxOutput ? _maxOutput : (_output < _minOutput ? _minOutput : _output);
+  _lastOutput = _output = _output - _lastOutput > _outputTrendLimit 
+    ? _lastOutput + _outputTrendLimit 
+    : (_output - _lastOutput < -_outputTrendLimit ? _lastOutput - _outputTrendLimit : _output); // Output trend clamping
   return _output;
 }
 

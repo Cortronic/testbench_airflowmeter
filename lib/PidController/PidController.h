@@ -18,7 +18,7 @@ class PidController{
     double getOutput() const { return _output; }
     void setSetpoint(double sp) { _setpoint = sp; }
     void setTunings(double kp, double ki, double kd);
-    void setOutputLimits(double minOut, double maxOut) { _minOutput = minOut; _maxOutput = maxOut; }
+    void setOutputLimits(double minOut, double maxOut, double trendLimit) { _minOutput = minOut; _maxOutput = maxOut; _outputTrendLimit = trendLimit; }
     void setSampleTime(double dt) { _dt = dt; } // in seconds
     void setControllerDirection(Direction dir);
 
@@ -38,6 +38,8 @@ class PidController{
     double _dt;
     double _setpoint;
     double _output;
+    double _lastOutput;
+    double _outputTrendLimit = 10.0; // Max change in output per update to prevent aggressive changes
     double _integral;
     double _minOutput, _maxOutput;
     Direction _controllerDirection;
