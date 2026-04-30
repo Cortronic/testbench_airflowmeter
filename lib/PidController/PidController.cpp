@@ -30,14 +30,18 @@ float PidController::update(double input) {
 
     // Controleer op verzadiging (PWM 0-255)
     bool saturated = (outputPreClamp > _maxOutput  || outputPreClamp < _minOutput);
-    bool sameDirection = (error > 0 && outputPreClamp > _maxOutput) || (error < 0 && outputPreClamp < _minOutput);
+    bool sameDirection;
+    if (_controllerDirection == DIRECT) {
+      sameDirection = (error > 0 && outputPreClamp > _maxOutput) || (error < 0 && outputPreClamp < _minOutput);
+    } else {
+      sameDirection = (error > 0 && outputPreClamp < _minOutput) || (error < 0 && outputPreClamp > _maxOutput);
+    }
 
     // Alleen integreren als we NIET verzadigd zijn in de richting van de fout
     if (!(saturated && sameDirection)) {
       _integral = potentialIntegral;
     }
   } else if (_integral > 0.01 || _integral < -0.01) {
-    // Kleine drempel om onnodig kleine integrale waarden te voorkomen
     _integral *= 0.9; // Exponentiële decay van de integraal als deze niet gebruikt wordt
   }
 
