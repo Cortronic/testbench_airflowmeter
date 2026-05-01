@@ -1,42 +1,57 @@
 #include "PidController.h"
 
 PidController::PidController(double kp, double ki, double kd, double dt, double minOutput, double maxOutput)
-  : _kp(kp), _ki(ki), _kd(kd)
-  , _dt(dt), _setpoint(0),
-   _output(0), _lastOutput(0)
+  : _kp(kp)
+  , _ki(ki)
+  , _kd(kd)
+  , _dt(dt)
+  , _alpha(0.1) // Voorbeeld waarde voor input low-pass filtering
+  , _beta(0.5) // Voorbeeld waarde voor error scaling
+  , _input(0)
+  , _setpoint(0)
+  , _lastOutput(0)
+  , _outputTrendLimit(1.0) // Voorbeeld waarde voor output trend limit
   , _integral(0)
-  , _minOutput(minOutput), _maxOutput(maxOutput)
+  , _minOutput(minOutput)
+  , _maxOutput(maxOutput)
   , _controllerDirection(DIRECT) {
-  _filter = new DoubleExponentialFilter(0.1, 0.01, 0.95, 5.0); // Voorbeeld parameters
 }
 
-PidController::~PidController() {
-  delete _filter;
-}
+PidController::~PidController() {}
+ 
 
 float PidController::update(double input) {
-  // 1. Filter & Trend (Gebruik de klasse van hiervoor)
-  double filtered = _filter->update(input);
-  double trend = _filter->getTrend();
-  double error = _setpoint - filtered;
+  
+  if (_controllerDirection == REVERSE) {
+    input = -input; // Invert input voor reverse mode
+  }
 
-  // 2. Bereken P en D actie
+  // In deze update functie gebruiken we een eenvoudige low-pass filter op de input voordat we de PID-berekeningen doen.
+  double lastinput = _input;
+  
+  // 1. Filter de input met een eenvoudige low-pass filter om ruis te verminderen voordat we de PID-berekeningen doen
+  _input = _alpha * input  +  (1 - _alpha) * _input; // Simpele low-pass filter op de input
+  double error = _setpoint - _input;
+
+  // 2. Schaal de error met de beta factor om de agressiviteit van de controller aan te passen bij grote fouten
+  error *= _beta; // Schaal de error eerst terug naar een bruikbaar bereik, anders kan het kwadrateren te groot worden. Pas deze factor aan op basis van de typische foutwaarden in jouw toepassing.
+  
+  // 3. Kwadrateer de error om de controller minder agressief te maken bij kleine afwijkingen, maar behoud de richting van de fout
+  error = error > 0 ? error * error : - (error * error);
+  
+
+  // 4. Bereken P en D actie
   double pTerm = _kp * error;
-  double dTerm = _kd * trend; // Directe trend koppeling
+  double dTrem = _kd * (_input - lastinput) / _dt; // Afgeleid van de gefilterde input
 
+  // 5. Integraal berekening met Clamping Anti-Windup
   if (_ki != 0) {
-    // 3. Integraal berekening met Clamping Anti-Windup
     double potentialIntegral = _integral + (error * _ki * _dt);
-    double outputPreClamp = pTerm + potentialIntegral - dTerm;
+    double outputPreClamp = pTerm + potentialIntegral - dTrem;
 
     // Controleer op verzadiging (PWM 0-255)
     bool saturated = (outputPreClamp > _maxOutput  || outputPreClamp < _minOutput);
-    bool sameDirection;
-    if (_controllerDirection == DIRECT) {
-      sameDirection = (error > 0 && outputPreClamp > _maxOutput) || (error < 0 && outputPreClamp < _minOutput);
-    } else {
-      sameDirection = (error > 0 && outputPreClamp < _minOutput) || (error < 0 && outputPreClamp > _maxOutput);
-    }
+    bool sameDirection = (error > 0 && outputPreClamp > _maxOutput) || (error < 0 && outputPreClamp < _minOutput); 
 
     // Alleen integreren als we NIET verzadigd zijn in de richting van de fout
     if (!(saturated && sameDirection)) {
@@ -46,29 +61,34 @@ float PidController::update(double input) {
     _integral *= 0.9; // Exponentiële decay van de integraal als deze niet gebruikt wordt
   }
 
-  // 4. Definitieve output berekenen en clampen
-  _output = pTerm + _integral - dTerm;
-  _output = _output > _maxOutput ? _maxOutput : (_output < _minOutput ? _minOutput : _output);
-  _lastOutput = _output = _output - _lastOutput > _outputTrendLimit 
-    ? _lastOutput + _outputTrendLimit 
-    : (_output - _lastOutput < -_outputTrendLimit ? _lastOutput - _outputTrendLimit : _output); // Output trend clamping
-  return _output;
+  // 6. Definitieve output berekenen en clampen
+  double output = pTerm + _integral - dTrem;
+  output = output > _maxOutput ? _maxOutput : (output < _minOutput ? _minOutput : output);
+
+  // 7. Output trend clamping om grote sprongen in de output te voorkomen
+  _lastOutput = output - _lastOutput > _outputTrendLimit ?
+    _lastOutput + _outputTrendLimit :
+    (output - _lastOutput < -_outputTrendLimit ? _lastOutput - _outputTrendLimit : output);
+    
+  return _lastOutput;  
+}
+
+void PidController::setAlpha(double alpha) {
+  _alpha = alpha; // Zet de alpha waarde voor de input low-pass filter
+}
+
+double PidController::getAlpha() const { 
+  return _alpha;
 }
 
 void PidController::setTunings(double kp, double ki, double kd) { 
   if (kp < 0 || ki < 0 || kd < 0) return; // Negatieve waarden niet toestaan
-
-  if (_controllerDirection == DIRECT) {
-    _kp = kp; _ki = ki; _kd = kd; 
-  } else {
-    _kp = -kp; _ki = -ki; _kd = -kd;
-  }  
+   _kp = kp; _ki = ki; _kd = kd;
 }
 
 void PidController::setControllerDirection(Direction dir) { 
   if (dir != _controllerDirection) {
     _controllerDirection = dir;
-    _kp = -_kp; _ki = -_ki; _kd = -_kd;
     reset(); // Reset integral en filter om abrupte veranderingen te voorkomen 
   } 
 }

@@ -33,8 +33,7 @@ typedef enum {
   PID_TUNE_D = 3,
   PID_TUNE_ALPHA = 4,
   PID_TUNE_BETA = 5,
-  PID_TUNE_DAMPING = 6,
-  PID_TUNE_TREND_LIMIT = 7,
+  PID_TUNE_TREND_LIMIT = 6,
 } PidTuneType;
 extern PidTuneType pidTuneType;
 
@@ -85,15 +84,11 @@ extern VenturiConstantsType venturiConstantsType;
 #define ALPHA_MAX 1.0
 #define ALPHA_STEP 0.01
 #define ALPHA_DECIMALS 2
-#define BETA_MIN 0.0
+#define BETA_MIN 0.01
 #define BETA_MAX 1.0
 #define BETA_STEP 0.01
 #define BETA_DECIMALS 2
-#define DAMPING_MIN 0.0
-#define DAMPING_MAX 1.0
-#define DAMPING_STEP 0.01
-#define DAMPING_DECIMALS 2
-#define TREND_LIMIT_MIN 0.0
-#define TREND_LIMIT_MAX 100.0
-#define TREND_LIMIT_STEP 0.1
-#define TREND_LIMIT_DECIMALS 1
+#define TREND_LIMIT_MIN 0.01
+#define TREND_LIMIT_MAX 10.0
+#define TREND_LIMIT_STEP 0.01
+#define TREND_LIMIT_DECIMALS 2

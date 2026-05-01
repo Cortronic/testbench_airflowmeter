@@ -1,8 +1,6 @@
 #ifndef PIDCONTROLLER_H
 #define PIDCONTROLLER_H
 
-#include "DoubleExponentialFilter.h"
-
 class PidController{
   
   public:
@@ -13,36 +11,33 @@ class PidController{
 
     PidController(double kp, double ki, double kd, double dt, double minOutput, double maxOutput);
     ~PidController();
-    float update(double pressure);
-    void reset() { _integral = 0; _filter->reset(); }
-    double getOutput() const { return _output; }
+    float update(double input); // should be called every delta t seconds.
+    void reset() { _integral = 0; }
+    double getOutput() const { return _lastOutput; }
     void setSetpoint(double sp) { _setpoint = sp; }
     void setTunings(double kp, double ki, double kd);
     void setOutputLimits(double minOut, double maxOut, double trendLimit) { _minOutput = minOut; _maxOutput = maxOut; _outputTrendLimit = trendLimit; }
     void setSampleTime(double dt) { _dt = dt; } // in seconds
     void setControllerDirection(Direction dir);
-
-    double getLevel() const { return _filter->getLevel(); }
-    double getTrend() const { return _filter->getTrend(); }
-    void setAlpha(double alpha) { _filter->setAlpha(alpha); }
-    double getAlpha() const { return _filter->getAlpha(); }
-    void setBeta(double beta) { _filter->setBeta(beta); }
-    double getBeta() const { return _filter->getBeta(); }
-    void setDamping(double d) { _filter->setDamping(d); }
-    double getDamping() const { return _filter->getDamping(); }
-    void setTrendLimit(double limit) { _filter->setTrendLimit(limit); }
-    double getTrendLimit() const { return _filter->getTrendLimit(); }
+    void setAlpha(double alpha);
+    double getAlpha() const;
+    void setBeta(double beta) { _beta = beta; } // setter for beta, the error-scaling factor
+    double getBeta() const { return _beta; } // getter voor beta
+    void setOutputTrendLimit(double trendLimit) { _outputTrendLimit = trendLimit; } // setter for output trend limit
+    double getOutputTrendLimit() const { return _outputTrendLimit; } // setter for output trend limit
 
   private:
     double _kp, _ki, _kd;
     double _dt;
+    double _alpha; // for input low-pass filtering.
+    double _beta; // for error scaling, range 0-1, higher values makes the controller more aggressive.
+    double _input;
     double _setpoint;
-    double _output;
     double _lastOutput;
-    double _outputTrendLimit = 10.0; // Max change in output per update to prevent aggressive changes
+    double _outputTrendLimit; // Max change in output per update to prevent aggressive changes.
     double _integral;
-    double _minOutput, _maxOutput;
-    Direction _controllerDirection;
-    DoubleExponentialFilter *_filter;    
+    double _minOutput;
+    double _maxOutput;
+    Direction _controllerDirection;   
 };
 #endif // PIDCONTROLLER_H

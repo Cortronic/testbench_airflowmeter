@@ -102,7 +102,7 @@ VenturiConstantsType venturiConstantsType = VENTURI_CONSTANTS_SET_NONE;
 
 double outputMasterFan = 0.0;
 double KpFlow=2, KiFlow=0, KdFlow=0, flowOutputTrendLimit=0.5;
-double flowAlpha=0.2, flowBeta=0.02, flowDamping=0.95, flowTrendLimit=5;
+double flowAlpha=0.2, flowBeta=0.02;
 PidController pidFlow(KpFlow, KiFlow, KdFlow, 0.02, 0.0, 100.0);
 
 double minBalancePressure = NAN;
@@ -111,7 +111,7 @@ double minBalanceFanOutput = NAN;
 double maxBalanceFanOutput = NAN;
 double outputPidBalanceFan = 0.0;
 double KpBalance=6, KiBalance=3, KdBalance=0, balanceOutputTrendLimit=0.5;
-double balanceAlpha=0.2, balanceBeta=0.02, balanceDamping=0.95, balanceTrendLimit=5;
+double balanceAlpha=0.2, balanceBeta=0.02;
 PidController pidBalance(KpBalance, KiBalance, KdBalance, 0.02, 0.0, 100.0);
 
 float offsetVenturiPressure = 0.0;
@@ -202,8 +202,7 @@ void setup() {
   pidFlow.setSampleTime(0.02); // 20 ms sample time
   pidFlow.setAlpha(flowAlpha);
   pidFlow.setBeta(flowBeta);
-  pidFlow.setDamping(flowDamping);
-  pidFlow.setTrendLimit(flowTrendLimit);
+  pidFlow.setOutputTrendLimit(flowOutputTrendLimit);
   delay(500);
 
   // initialize the Balance PID variables
@@ -213,8 +212,7 @@ void setup() {
   pidBalance.setSampleTime(0.02); // 20 ms sample time
   pidBalance.setAlpha(balanceAlpha); // Set the alpha parameter for the exponential moving average filter
   pidBalance.setBeta(balanceBeta); // Set the beta parameter for trend estimation
-  pidBalance.setDamping(balanceDamping); // Set the damping factor to smooth the response (0.95 means 5% of the new value is added to the smoothed value)
-  pidBalance.setTrendLimit(balanceTrendLimit); // Set the trend limit to prevent excessive influence of the trend on the output
+  pidBalance.setOutputTrendLimit(balanceOutputTrendLimit); // Set the trend limit to prevent excessive influence of the trend on the output
   delay(500);
 
   // get initial measurements from the sensors to populate the smoothed averages and the venturi flow calculation
@@ -293,6 +291,7 @@ void loop() {
       if (modeType == MT_OPERATION 
           || modeType == MT_CAL_FLOW
           || pidTuneType != PID_TUNE_NONE
+          || venturiConstantsType != VENTURI_CONSTANTS_SET_NONE
       ) {
         displayMeasurements(); // 42ms
       }
@@ -457,15 +456,13 @@ static void loadPreferences() {
   KdFlow =  preferences.getFloat(KEY_KD_FLOW, KdFlow);
   flowAlpha = preferences.getFloat(KEY_ALPHA_FLOW, flowAlpha);
   flowBeta = preferences.getFloat(KEY_BETA_FLOW, flowBeta);
-  flowDamping = preferences.getFloat(KEY_DAMPING_FLOW, flowDamping);
-  flowTrendLimit = preferences.getFloat(KEY_TREND_LIMIT_FLOW, flowTrendLimit);
+  flowOutputTrendLimit = preferences.getFloat(KEY_TREND_LIMIT_FLOW, flowOutputTrendLimit);
   KpBalance = preferences.getFloat(KEY_KP_BALANCE, KpBalance);
   KiBalance = preferences.getFloat(KEY_KI_BALANCE, KiBalance);
   KdBalance = preferences.getFloat(KEY_KD_BALANCE, KdBalance);
   balanceAlpha = preferences.getFloat(KEY_BALANCE_ALPHA, balanceAlpha);
   balanceBeta = preferences.getFloat(KEY_BALANCE_BETA, balanceBeta);
-  balanceDamping = preferences.getFloat(KEY_BALANCE_DAMPING, balanceDamping);
-  balanceTrendLimit = preferences.getFloat(KEY_BALANCE_TREND_LIMIT, balanceTrendLimit);
+  balanceOutputTrendLimit = preferences.getFloat(KEY_BALANCE_TREND_LIMIT, balanceOutputTrendLimit);
 
   preferences.end();
 }
@@ -798,16 +795,10 @@ static void on_button_short_click() {
               numberSelector.setValue(pidFlow.getBeta());
               displayMeasurements();
               break;
-            case PID_TUNE_DAMPING:
-              pidTuneType = PID_TUNE_DAMPING;
-              numberSelector.setRange(DAMPING_MIN, DAMPING_MAX, DAMPING_STEP, false, DAMPING_DECIMALS);
-              numberSelector.setValue(pidFlow.getDamping());
-              displayMeasurements();
-              break;
             case PID_TUNE_TREND_LIMIT:  
               pidTuneType = PID_TUNE_TREND_LIMIT;
               numberSelector.setRange(TREND_LIMIT_MIN, TREND_LIMIT_MAX, TREND_LIMIT_STEP, false, TREND_LIMIT_DECIMALS);
-              numberSelector.setValue(pidFlow.getTrendLimit());
+              numberSelector.setValue(pidFlow.getOutputTrendLimit());
               displayMeasurements();
               break;
           }
@@ -830,10 +821,6 @@ static void on_button_short_click() {
           break;
         case PID_TUNE_BETA:
           saveFloat(KEY_BETA_FLOW, numberSelector.getValue());
-          initNextMode(MT_TUNE_PID_FLOW);
-          break;
-        case PID_TUNE_DAMPING:
-          saveFloat(KEY_DAMPING_FLOW, numberSelector.getValue());
           initNextMode(MT_TUNE_PID_FLOW);
           break;
         case PID_TUNE_TREND_LIMIT:
@@ -880,16 +867,10 @@ static void on_button_short_click() {
               numberSelector.setValue(pidBalance.getBeta());
               displayMeasurements();
               break;
-            case PID_TUNE_DAMPING:
-              pidTuneType = PID_TUNE_DAMPING;
-              numberSelector.setRange(DAMPING_MIN, DAMPING_MAX, DAMPING_STEP, false, DAMPING_DECIMALS);
-              numberSelector.setValue(pidBalance.getDamping());
-              displayMeasurements();
-              break;
             case PID_TUNE_TREND_LIMIT:
               pidTuneType = PID_TUNE_TREND_LIMIT;
               numberSelector.setRange(TREND_LIMIT_MIN, TREND_LIMIT_MAX, TREND_LIMIT_STEP, false, TREND_LIMIT_DECIMALS);
-              numberSelector.setValue(pidBalance.getTrendLimit());
+              numberSelector.setValue(pidBalance.getOutputTrendLimit());
               displayMeasurements();
               break; 
           }
@@ -912,10 +893,6 @@ static void on_button_short_click() {
           break;
         case PID_TUNE_BETA:
           saveFloat(KEY_BALANCE_BETA, numberSelector.getValue());
-          initNextMode(MT_TUNE_PID_BALANCE);
-          break;
-        case PID_TUNE_DAMPING:
-          saveFloat(KEY_BALANCE_DAMPING, numberSelector.getValue());
           initNextMode(MT_TUNE_PID_BALANCE);
           break;
         case PID_TUNE_TREND_LIMIT:
@@ -946,7 +923,7 @@ static void on_button_short_click() {
              break;
             case VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR:
               venturiConstantsType = VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR;
-              numberSelector.setRange(0.01, 1.0, 0.01, false, 2);
+              numberSelector.setRange(0.001, 1.0, 0.001, false, 3);
               numberSelector.setValue(venturi.getSmoothedFlowFactor());
               displayMeasurements();
               break;
@@ -1066,29 +1043,20 @@ static void loopRotaryEncoder() {
             pidFlow.setTunings(KpFlow, KiFlow, KdFlow);
             displayTextNumber("Kd flow: %.2f", KdFlow);
             break;
-
           case PID_TUNE_ALPHA:
             flowAlpha = numberSelector.getValue();
             pidFlow.setAlpha(flowAlpha);
             displayTextNumber("alpha flow: %.2f", flowAlpha);
             break;
-          
           case PID_TUNE_BETA:
             flowBeta = numberSelector.getValue();
             pidFlow.setBeta(flowBeta);
             displayTextNumber("beta flow: %.2f", flowBeta);
             break;
-            
-          case PID_TUNE_DAMPING:
-            flowDamping = numberSelector.getValue();
-            pidFlow.setDamping(flowDamping);
-            displayTextNumber("damping flow: %.2f", flowDamping);
-            break;
-            
           case PID_TUNE_TREND_LIMIT:
-            flowTrendLimit = numberSelector.getValue();
-            pidFlow.setTrendLimit(flowTrendLimit);
-            displayTextNumber("trendlimit flow: %.1f", flowTrendLimit);
+            flowOutputTrendLimit = numberSelector.getValue();
+            pidFlow.setOutputTrendLimit(flowOutputTrendLimit);
+            displayTextNumber("trendlimit flow: %.2f", flowOutputTrendLimit);
             break;
         } 
         break;
@@ -1123,15 +1091,10 @@ static void loopRotaryEncoder() {
             pidBalance.setBeta(balanceBeta);
             displayTextNumber("beta balance: %.2f", balanceBeta);
             break;
-          case PID_TUNE_DAMPING:
-            balanceDamping = numberSelector.getValue();
-            pidBalance.setDamping(balanceDamping);
-            displayTextNumber("damping bal.: %.2f", balanceDamping);
-            break;
           case PID_TUNE_TREND_LIMIT:
-            balanceTrendLimit = numberSelector.getValue();
-            pidBalance.setTrendLimit(balanceTrendLimit);
-            displayTextNumber("trendlimit bal.: %.1f", balanceTrendLimit);
+            balanceOutputTrendLimit = numberSelector.getValue();
+            pidBalance.setOutputTrendLimit(balanceOutputTrendLimit);
+            displayTextNumber("trendlimit bal.: %.2f", balanceOutputTrendLimit);
             break;
         } 
         break;
@@ -1153,7 +1116,7 @@ static void loopRotaryEncoder() {
             break;
           case VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR:
             venturi.setSmoothedFlowFactor(numberSelector.getValue());
-            displayTextNumber("Smooth factor: %.2f", venturi.getSmoothedFlowFactor());
+            displayTextNumber("Smooth factor: %.3f", venturi.getSmoothedFlowFactor());
             break;
         }
         break;  
@@ -1407,14 +1370,10 @@ static void displayMeasurements() {
     } else if (pidTuneType == PID_TUNE_BETA) {
       // display beta PID controller
       display.printf("beta flow: %.2f", numberSelector.getValue());
-    } else if (pidTuneType == PID_TUNE_DAMPING) {
-      // display damping PID controller
-      display.printf("damping flow: %.2f", numberSelector.getValue());
     } else if (pidTuneType == PID_TUNE_TREND_LIMIT) {
       // display trend limit PID controller
       display.printf("trendlimit flow: %.1f", numberSelector.getValue());
     }
-  
   } else if (modeType == MT_TUNE_PID_BALANCE) {
     if (pidTuneType == PID_TUNE_P) {
       // display proportional gain PID controller
@@ -1431,14 +1390,10 @@ static void displayMeasurements() {
     } else if (pidTuneType == PID_TUNE_BETA) {
       // display beta PID controller
       display.printf("beta balance: %.2f", numberSelector.getValue());
-    } else if (pidTuneType == PID_TUNE_DAMPING) {
-      // display damping PID controller
-      display.printf("damping bal.: %.2f", numberSelector.getValue());
     } else if (pidTuneType == PID_TUNE_TREND_LIMIT) {
       // display trend limit PID controller
       display.printf("trendlimit bal.: %.1f", numberSelector.getValue());
     }
-
   } else if (modeType == MT_SET_VENTURI_CONSTANTS) {
     if (venturiConstantsType == VENTURI_CONSTANTS_SET_DIA_INLET) {
       // display inlet diameter venturi
@@ -1448,7 +1403,7 @@ static void displayMeasurements() {
       display.printf("Throat dia: %.3fm", numberSelector.getValue());
     } else if (venturiConstantsType == VENTURI_CONSTANTS_SET_SMOOTHING_FACTOR) {
       // display smoothing factor venturi
-      display.printf("Smooth factor: %.2f", numberSelector.getValue());
+      display.printf("Smooth factor: %.3f", numberSelector.getValue());
     } 
   }
   readPressureSensors();
@@ -1592,14 +1547,9 @@ static void displaySelectTunePID(PidTuneType type) {
   if (type == PID_TUNE_ALPHA) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (type == PID_TUNE_BETA) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(64, 37);
+  display.setCursor(0, 46);
   display.print("Tune beta");
   if (type == PID_TUNE_BETA) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
-
-  if (type == PID_TUNE_DAMPING) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
-  display.setCursor(0, 46);
-  display.print("Tune damping");
-  if (type == PID_TUNE_DAMPING) display.setTextColor(SH110X_WHITE, SH110X_BLACK);
 
   if (type == PID_TUNE_TREND_LIMIT) display.setTextColor(SH110X_BLACK, SH110X_WHITE);
   display.setCursor(0, 55);
