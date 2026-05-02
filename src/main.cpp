@@ -107,11 +107,13 @@ PidController pidFlow(KpFlow, KiFlow, KdFlow, 0.02, 0.0, 100.0);
 
 double minBalancePressure = NAN;
 double maxBalancePressure = NAN;
+double minBalanceFilteredInput = NAN;
+double maxBalanceFilteredInput = NAN;
 double minBalanceFanOutput = NAN;
 double maxBalanceFanOutput = NAN;
 double outputPidBalanceFan = 0.0;
-double KpBalance=6, KiBalance=3, KdBalance=0, balanceOutputTrendLimit=0.5;
-double balanceAlpha=0.2, balanceBeta=0.02;
+double KpBalance = 6, KiBalance = 3, KdBalance = 0, balanceOutputTrendLimit = 0.5;
+double balanceAlpha = 0.2, balanceBeta = 0.02;
 PidController pidBalance(KpBalance, KiBalance, KdBalance, 0.02, 0.0, 100.0);
 
 float offsetVenturiPressure = 0.0;
@@ -273,14 +275,18 @@ void loop() {
     // every second
     if (loopcnt % 10 == 0) {
       Serial.printf(
-        "balance: %.1f%%, %.1f%%, %.1fpa, %.1fpa  \r",
+        "balance: %.1f%%, %.1f%%, %.1fpa, %.1fpa, %.2f. %.2f  \r",
         minBalanceFanOutput,
         maxBalanceFanOutput,
         minBalancePressure,
-        maxBalancePressure
+        maxBalancePressure,
+        minBalanceFilteredInput,
+        maxBalanceFilteredInput
       );
       minBalanceFanOutput = NAN;
       maxBalanceFanOutput = NAN;
+      minBalanceFilteredInput = NAN;
+      maxBalanceFilteredInput = NAN;
       minBalancePressure = NAN;
       maxBalancePressure = NAN;
       readPressureSensors();
@@ -412,6 +418,12 @@ static void readPressureSensors() {
       }
       if (isnan(maxBalancePressure) || differentialPressure > maxBalancePressure) {
         maxBalancePressure = differentialPressure;
+      }
+      if (isnan(minBalanceFilteredInput) || pidBalance.getFilteredInput() < minBalanceFilteredInput) {
+        minBalanceFilteredInput = pidBalance.getFilteredInput();
+      }
+      if (isnan(maxBalanceFilteredInput) || pidBalance.getFilteredInput() > maxBalanceFilteredInput) {
+        maxBalanceFilteredInput = pidBalance.getFilteredInput();
       }
       if (isnan(minBalanceFanOutput) || outputPidBalanceFan < minBalanceFanOutput) {
         minBalanceFanOutput = outputPidBalanceFan;
@@ -1372,7 +1384,7 @@ static void displayMeasurements() {
       display.printf("beta flow: %.2f", numberSelector.getValue());
     } else if (pidTuneType == PID_TUNE_TREND_LIMIT) {
       // display trend limit PID controller
-      display.printf("trendlimit flow: %.1f", numberSelector.getValue());
+      display.printf("trendlimit flow: %.2f", numberSelector.getValue());
     }
   } else if (modeType == MT_TUNE_PID_BALANCE) {
     if (pidTuneType == PID_TUNE_P) {
@@ -1392,7 +1404,7 @@ static void displayMeasurements() {
       display.printf("beta balance: %.2f", numberSelector.getValue());
     } else if (pidTuneType == PID_TUNE_TREND_LIMIT) {
       // display trend limit PID controller
-      display.printf("trendlimit bal.: %.1f", numberSelector.getValue());
+      display.printf("trendlimit bal.: %.2f", numberSelector.getValue());
     }
   } else if (modeType == MT_SET_VENTURI_CONSTANTS) {
     if (venturiConstantsType == VENTURI_CONSTANTS_SET_DIA_INLET) {

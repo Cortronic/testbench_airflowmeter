@@ -25,13 +25,14 @@ class PidController{
     double getBeta() const { return _beta; } // getter voor beta
     void setOutputTrendLimit(double trendLimit) { _outputTrendLimit = trendLimit; } // setter for output trend limit
     double getOutputTrendLimit() const { return _outputTrendLimit; } // setter for output trend limit
+    double getFilteredInput() const { return _filteredInput; }
 
   private:
     double _kp, _ki, _kd;
     double _dt;
     double _alpha; // for input low-pass filtering.
     double _beta; // for error scaling, range 0-1, higher values makes the controller more aggressive.
-    double _input;
+    double _filteredInput;
     double _setpoint;
     double _lastOutput;
     double _outputTrendLimit; // Max change in output per update to prevent aggressive changes.

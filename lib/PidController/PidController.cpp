@@ -7,7 +7,7 @@ PidController::PidController(double kp, double ki, double kd, double dt, double 
   , _dt(dt)
   , _alpha(0.1) // Voorbeeld waarde voor input low-pass filtering
   , _beta(0.5) // Voorbeeld waarde voor error scaling
-  , _input(0)
+  , _filteredInput(0)
   , _setpoint(0)
   , _lastOutput(0)
   , _outputTrendLimit(1.0) // Voorbeeld waarde voor output trend limit
@@ -27,11 +27,11 @@ float PidController::update(double input) {
   }
 
   // In deze update functie gebruiken we een eenvoudige low-pass filter op de input voordat we de PID-berekeningen doen.
-  double lastinput = _input;
+  double lastFilteredInput = _filteredInput;
   
   // 1. Filter de input met een eenvoudige low-pass filter om ruis te verminderen voordat we de PID-berekeningen doen
-  _input = _alpha * input  +  (1 - _alpha) * _input; // Simpele low-pass filter op de input
-  double error = _setpoint - _input;
+  _filteredInput = _alpha * input  +  (1 - _alpha) * _filteredInput; // Simpele low-pass filter op de input
+  double error = _setpoint - _filteredInput;
 
   // 2. Schaal de error met de beta factor om de agressiviteit van de controller aan te passen bij grote fouten
   error *= _beta; // Schaal de error eerst terug naar een bruikbaar bereik, anders kan het kwadrateren te groot worden. Pas deze factor aan op basis van de typische foutwaarden in jouw toepassing.
@@ -39,10 +39,9 @@ float PidController::update(double input) {
   // 3. Kwadrateer de error om de controller minder agressief te maken bij kleine afwijkingen, maar behoud de richting van de fout
   error = error > 0 ? error * error : - (error * error);
   
-
   // 4. Bereken P en D actie
   double pTerm = _kp * error;
-  double dTrem = _kd * (_input - lastinput) / _dt; // Afgeleid van de gefilterde input
+  double dTrem = _kd * (_filteredInput - lastFilteredInput) / _dt; // Afgeleid van de gefilterde input
 
   // 5. Integraal berekening met Clamping Anti-Windup
   if (_ki != 0) {
