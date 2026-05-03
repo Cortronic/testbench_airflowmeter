@@ -100,18 +100,27 @@ PidTuneType pidTuneType = PID_TUNE_NONE;
 OperatingMode operatingMode = OM_SPEED_PULL_FAN;
 VenturiConstantsType venturiConstantsType = VENTURI_CONSTANTS_SET_NONE;
 
+
+double minPidFlowInput = NAN;
+double maxPidFlowInput = NAN;
+double minPidFlowFilteredInput = NAN;
+double maxPidFlowFilteredInput = NAN;
+double minPidFlowOutput = NAN;
+double maxPidFlowOutput = NAN;
+
 double outputMasterFan = 0.0;
 double KpFlow=2, KiFlow=0, KdFlow=0, flowOutputTrendLimit=0.5;
 double flowAlpha=0.2, flowBeta=0.02;
 PidController pidFlow(KpFlow, KiFlow, KdFlow, 0.02, 0.0, 100.0);
 
-double minBalancePressure = NAN;
-double maxBalancePressure = NAN;
-double minBalanceFilteredInput = NAN;
-double maxBalanceFilteredInput = NAN;
-double minBalanceFanOutput = NAN;
-double maxBalanceFanOutput = NAN;
-double outputPidBalanceFan = 0.0;
+double minPidBalanceInput = NAN;
+double maxPidBalanceInput = NAN;
+double minPidBalanceFilteredInput = NAN;
+double maxPidBalanceFilteredInput = NAN;
+double minPidBalanceOutput = NAN;
+double maxPidBalanceOutput = NAN;
+
+double outputSlaveFan = 0.0;
 double KpBalance = 6, KiBalance = 3, KdBalance = 0, balanceOutputTrendLimit = 0.5;
 double balanceAlpha = 0.2, balanceBeta = 0.02;
 PidController pidBalance(KpBalance, KiBalance, KdBalance, 0.02, 0.0, 100.0);
@@ -129,7 +138,7 @@ static void  setMasterFan(FollowFanType type);
 static void  setMasterFanSpeedPercent(float speed);
 static void  setSlaveFanSpeedPercent(float speed);
 static void  setOperationMode(OperatingMode mode);
-static void  initDisplay(void);
+static void  initDisplay();
 static void  loopRotaryEncoder();
 static void  displayMeasurements();
 static void  displaySelectMode(ModeType);
@@ -274,22 +283,42 @@ void loop() {
     
     // every second
     if (loopcnt % 10 == 0) {
-      Serial.printf(
-        "balance: %.1f%%, %.1f%%, %.1fpa, %.1fpa, %.2f. %.2f  \r",
-        minBalanceFanOutput,
-        maxBalanceFanOutput,
-        minBalancePressure,
-        maxBalancePressure,
-        minBalanceFilteredInput,
-        maxBalanceFilteredInput
-      );
-      minBalanceFanOutput = NAN;
-      maxBalanceFanOutput = NAN;
-      minBalanceFilteredInput = NAN;
-      maxBalanceFilteredInput = NAN;
-      minBalancePressure = NAN;
-      maxBalancePressure = NAN;
-      readPressureSensors();
+      if (!isnan(minPidFlowFilteredInput)) {
+        Serial.printf(
+          "flow: %.1fm3/h, %.1fm3/h, %.1fm3/s, %.1fm3/s, %.1f%%, %.1f%%  \r",
+          minPidFlowInput,
+          maxPidFlowInput,
+          minPidFlowFilteredInput,
+          maxPidFlowFilteredInput,
+          minPidFlowOutput,
+          maxPidFlowOutput
+        );
+        minPidFlowInput = NAN;
+        maxPidFlowInput = NAN;
+        minPidFlowFilteredInput = NAN;
+        maxPidFlowFilteredInput = NAN;
+        minPidFlowOutput = NAN;
+        maxPidFlowOutput = NAN;
+        readPressureSensors();
+      }
+      if (!isnan(minPidBalanceFilteredInput)) {
+        Serial.printf(
+          "balance: %.1fpa, %.1fpa, %.2fpa, %.2fpa, %.1f%%, %.1f%%  \r",
+          minPidBalanceInput,
+          maxPidBalanceInput,
+          minPidBalanceFilteredInput,
+          maxPidBalanceFilteredInput,
+          minPidBalanceOutput,
+          maxPidBalanceOutput
+        );
+        minPidBalanceInput = NAN;
+        maxPidBalanceInput = NAN;
+        minPidBalanceFilteredInput = NAN;
+        maxPidBalanceFilteredInput = NAN;
+        minPidBalanceOutput = NAN;
+        maxPidBalanceOutput = NAN;
+        readPressureSensors();
+      }
     }
 
     // every 2 seconds
@@ -382,6 +411,50 @@ static void setupTimer0() {
 }
 //////////////////////////////////////////////////////////////////////////
 
+static void updateStatisticsPidFlow(float flow) {
+  if (isnan(minPidFlowInput) || flow < minPidFlowInput) {
+    minPidFlowInput = flow;
+  }
+  if (isnan(maxPidFlowInput) || flow > maxPidFlowInput) {
+    maxPidFlowInput = flow;
+  }
+  if (isnan(minPidFlowFilteredInput) || pidFlow.getFilteredInput() < minPidFlowFilteredInput) {
+    minPidFlowFilteredInput = pidFlow.getFilteredInput();
+  }
+  if (isnan(maxPidFlowFilteredInput) || pidFlow.getFilteredInput() > maxPidFlowFilteredInput) {
+    maxPidFlowFilteredInput = pidFlow.getFilteredInput();
+  }
+  if (isnan(minPidFlowOutput) || outputMasterFan < minPidFlowOutput) {
+    minPidFlowOutput = outputMasterFan;
+  }
+  if (isnan(maxPidFlowOutput) || outputMasterFan > maxPidFlowOutput) {
+    maxPidFlowOutput = outputMasterFan;
+  }
+}
+//////////////////////////////////////////////////////////////////////////
+
+static void updateStatisticsPidBalance(float differentialPressure) {
+  if (isnan(minPidBalanceInput) || differentialPressure < minPidBalanceInput) {
+    minPidBalanceInput = differentialPressure;
+  }
+  if (isnan(maxPidBalanceInput) || differentialPressure > maxPidBalanceInput) {
+    maxPidBalanceInput = differentialPressure;
+  }
+  if (isnan(minPidBalanceFilteredInput) || pidBalance.getFilteredInput() < minPidBalanceFilteredInput) {
+    minPidBalanceFilteredInput = pidBalance.getFilteredInput();
+  }
+  if (isnan(maxPidBalanceFilteredInput) || pidBalance.getFilteredInput() > maxPidBalanceFilteredInput) {
+    maxPidBalanceFilteredInput = pidBalance.getFilteredInput();
+  }
+  if (isnan(minPidBalanceOutput) || outputSlaveFan < minPidBalanceOutput) {
+    minPidBalanceOutput = outputSlaveFan;
+  }
+  if (isnan(maxPidBalanceOutput) || outputSlaveFan > maxPidBalanceOutput) {
+    maxPidBalanceOutput = outputSlaveFan;
+  }
+}
+//////////////////////////////////////////////////////////////////////////
+
 static void readPressureSensors() {
   
   if (ms20_passed == true) {
@@ -395,41 +468,29 @@ static void readPressureSensors() {
       venturi.update(0.0);
     } else {
       differentialPressure -= offsetVenturiPressure;
-      float venturiFlow = venturi.update(differentialPressure);
+      float flowVenturi = venturi.update(differentialPressure);
       if (modeType != MT_ADJUST_OFFSETS) {
         if (operatingMode == OM_FLOW_PULL_FAN || operatingMode == OM_FLOW_PUSH_FAN) {
-          outputMasterFan = pidFlow.update(venturiFlow);
+          outputMasterFan = pidFlow.update(flowVenturi);
           setMasterFanSpeedPercent(outputMasterFan);
+          if (modeType == MT_TUNE_PID_FLOW) {
+            updateStatisticsPidFlow(flowVenturi);
+          }
         }
       }
     }
 
     error = sdpBalance.readMeasurement(differentialPressure, temperature);
     if (error) {
-      Serial.print("Error trying to execute readMeasurement from Balance Pressure sensor");
+      Serial.print("Error trying to execute readMeasurement from Balance Pressure sensor\n");
       balancePressure.add(0.0);
     } else {
       differentialPressure -= offsetBalancePressure;
       balancePressure.add(differentialPressure);
-      outputPidBalanceFan = pidBalance.update(differentialPressure);
-      setSlaveFanSpeedPercent(outputPidBalanceFan);
-      if (isnan(minBalancePressure) || differentialPressure < minBalancePressure) {
-        minBalancePressure = differentialPressure;
-      }
-      if (isnan(maxBalancePressure) || differentialPressure > maxBalancePressure) {
-        maxBalancePressure = differentialPressure;
-      }
-      if (isnan(minBalanceFilteredInput) || pidBalance.getFilteredInput() < minBalanceFilteredInput) {
-        minBalanceFilteredInput = pidBalance.getFilteredInput();
-      }
-      if (isnan(maxBalanceFilteredInput) || pidBalance.getFilteredInput() > maxBalanceFilteredInput) {
-        maxBalanceFilteredInput = pidBalance.getFilteredInput();
-      }
-      if (isnan(minBalanceFanOutput) || outputPidBalanceFan < minBalanceFanOutput) {
-        minBalanceFanOutput = outputPidBalanceFan;
-      }
-      if (isnan(maxBalanceFanOutput) || outputPidBalanceFan > maxBalanceFanOutput) {
-        maxBalanceFanOutput = outputPidBalanceFan;
+      outputSlaveFan = pidBalance.update(differentialPressure);
+      setSlaveFanSpeedPercent(outputSlaveFan);
+      if (modeType == MT_TUNE_PID_BALANCE) {
+        updateStatisticsPidBalance(differentialPressure);
       }
     }
   }
@@ -1138,7 +1199,7 @@ static void loopRotaryEncoder() {
 }
 //////////////////////////////////////////////////////////////////////////
 
-static void initBME280(void) {
+static void initBME280() {
   
   if (bme280.begin(I2C_ADDRESS_BME280, &I2C_A)) {
 
@@ -1260,7 +1321,7 @@ static void setOledBrightness(uint8_t brightness) {
 }
 //////////////////////////////////////////////////////////////////////////
 
-static void initDisplay(void) {
+static void initDisplay() {
   display.begin(0x3C, true);
   setOledBrightness(0x60);
   display.clearDisplay();
